@@ -105,9 +105,35 @@ export interface AgentLatestResponse {
   incident: Incident | null;
 }
 
+export interface WorkerPoolHealth {
+  activeWorkers: number;
+  totalCapacity: number;
+  cluster?: string;
+  nodeGroup?: string;
+}
+
+export interface WorkerChaosState {
+  scenario?: string;
+  activeIncidentId?: string | null;
+}
+
+export interface WorkerHealthResponse {
+  status: 'healthy' | 'degraded' | string;
+  service?: string;
+  uptimeSeconds?: number;
+  workerPool?: WorkerPoolHealth;
+  ffmpegVersion?: string;
+  codecsSupported?: string[];
+  chaosState?: WorkerChaosState;
+}
+
 // Controlled Polling Intervals
 const NOMINAL_POLL_INTERVAL_MS = 5000;
 const ACTIVE_POLL_INTERVAL_MS = 1200;
+
+// Infrastructure Endpoints
+const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_URL || 'http://localhost:4001';
+const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8000';
 
 export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
@@ -117,6 +143,12 @@ export default function IncidentControlCenter() {
   // Live Infrastructure Connectivity Badges
   const [pipelineOnline, setPipelineOnline] = useState<boolean>(false);
   const [agentOnline, setAgentOnline] = useState<boolean>(false);
+
+  // Worker / Cluster degradation state (separated from HTTP connectivity)
+  const [isClusterDegraded, setIsClusterDegraded] = useState<boolean>(false);
+
+  // Live Transcoder Worker Health payload from GET /health
+  const [workerHealth, setWorkerHealth] = useState<WorkerHealthResponse | null>(null);
 
   // Active Incident State (null represents nominal IDLE monitoring)
   const [incident, setIncident] = useState<Incident | null>(null);
@@ -143,16 +175,80 @@ export default function IncidentControlCenter() {
   }, []);
 
   // =========================================================================
-  // Requirement 1: Gated State-Machine Polling
+  // Requirement 1: Isolated Infrastructure Heartbeat Effect
+  // Dedicated useEffect with a 4-second setInterval that probes:
+  //   - Worker: ${PIPELINE_URL}/health
+  //   - Agent:  ${AGENT_URL}/api/health
+  // Sets pipelineOnline strictly based on workerRes.ok (green dot).
+  // Sets agentOnline strictly based on agentRes.ok.
+  // Parses live workerHealth and updates cluster degraded status.
+  // =========================================================================
+  useEffect(() => {
+    let isMounted = true;
+
+    const probeHealth = async () => {
+      try {
+        const [workerRes, agentRes] = await Promise.allSettled([
+          fetch(`${PIPELINE_URL}/health`, { cache: 'no-store' }),
+          fetch(`${AGENT_URL}/api/health`, { cache: 'no-store' })
+        ]);
+
+        if (!isMounted) return;
+
+        const isPipelineOk = workerRes.status === 'fulfilled' && workerRes.value.ok;
+        const isAgentOk = agentRes.status === 'fulfilled' && agentRes.value.ok;
+
+        setPipelineOnline(isPipelineOk);
+        setAgentOnline(isAgentOk);
+
+        // Bind live /health payload from Port 4001
+        if (isPipelineOk && workerRes.status === 'fulfilled') {
+          try {
+            const healthData: WorkerHealthResponse = await workerRes.value.json();
+            setWorkerHealth(healthData);
+            const isDegraded = healthData.status === 'degraded' || 
+              Boolean(healthData.chaosState?.scenario && healthData.chaosState.scenario !== 'NONE');
+            setIsClusterDegraded(isDegraded);
+          } catch (err) {
+            console.warn('[Heartbeat] Failed to parse worker health JSON:', err);
+          }
+        } else {
+          setWorkerHealth(null);
+          setIsClusterDegraded(false);
+        }
+      } catch {
+        if (isMounted) {
+          setPipelineOnline(false);
+          setAgentOnline(false);
+          setWorkerHealth(null);
+          setIsClusterDegraded(false);
+        }
+      }
+    };
+
+    probeHealth();
+    const intervalId = setInterval(probeHealth, 4000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  // =========================================================================
+  // Requirement 3: Independent Incident Polling
   // - Nominal / Idle: Slow baseline polling (5000ms) to detect new failures
   // - Triaging / Active: Rapid polling (1200ms) to stream real-time AST/sandbox progress
-  // - HITL Gate (NEEDS_APPROVAL / WAITING_FOR_HUMAN): IMMEDIATELY CLEAR & STOP ALL TIMERS
+  // - HITL Gate (NEEDS_APPROVAL / WAITING_FOR_HUMAN): IMMEDIATELY CLEAR & STOP ALL INCIDENT TIMERS
   // - Resolved / Escalated: Stop polling until user initiates action
+  // When the incident pauses at NEEDS_APPROVAL, halting the incident poller
+  // must NOT freeze or turn off the header health badges.
   // =========================================================================
   useEffect(() => {
     clearPollTimer();
 
-    // Condition 1: HITL Gate -> Immediately halt all timers. Zero network requests during review.
+    // Condition 1: HITL Gate -> Immediately halt incident timers. Zero network requests during review.
+    // Halting incident poller does NOT freeze or turn off header health badges.
     if (activeStatus === 'NEEDS_APPROVAL' || activeStatus === 'WAITING_FOR_HUMAN') {
       return;
     }
@@ -162,7 +258,7 @@ export default function IncidentControlCenter() {
       return;
     }
 
-    // Condition 3: Active Investigation -> Rapid polling (1000-1500ms)
+    // Condition 3: Active Investigation -> Rapid polling (1200ms)
     if (
       activeStatus === 'INITIALIZING' ||
       activeStatus === 'ANALYZING' ||
@@ -182,21 +278,21 @@ export default function IncidentControlCenter() {
         try {
           const currentInc = incidentRef.current;
           const [agentRes, pipelineRes] = await Promise.allSettled([
-            fetch('http://localhost:8000/api/incident/latest', { cache: 'no-store' }),
-            fetch('http://localhost:4001/api/chaos/status', { cache: 'no-store' })
+            fetch(`${AGENT_URL}/api/incident/latest`, { cache: 'no-store' }),
+            fetch(`${PIPELINE_URL}/api/chaos/status`, { cache: 'no-store' })
           ]);
 
           if (isCancelled) return;
+
+          if (pipelineRes.status === 'fulfilled' && pipelineRes.value.ok) {
+            const chaosData: ChaosStatusResponse = await pipelineRes.value.json();
+            setIsClusterDegraded(Boolean(chaosData.isCrashed || (chaosData.activeScenario && chaosData.activeScenario !== 'NONE')));
+          }
 
           let latestAgentInc: Incident | null = null;
           if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
             const data: AgentLatestResponse = await agentRes.value.json();
             latestAgentInc = data.incident;
-          }
-
-          if (pipelineRes.status === 'fulfilled' && pipelineRes.value.ok) {
-            const chaosData: ChaosStatusResponse = await pipelineRes.value.json();
-            setPipelineOnline(!chaosData.isCrashed);
           }
 
           if (latestAgentInc && latestAgentInc.incident_id) {
@@ -245,27 +341,26 @@ export default function IncidentControlCenter() {
       isRequestInFlightRef.current = true;
 
       try {
-        const [chaosRes, agentRes, pipeHealth, agentHealth] = await Promise.allSettled([
-          fetch('http://localhost:4001/api/chaos/status', { cache: 'no-store' }),
-          fetch('http://localhost:8000/api/incident/latest', { cache: 'no-store' }),
-          fetch('http://localhost:4001/health', { cache: 'no-store' }),
-          fetch('http://localhost:8000/api/health', { cache: 'no-store' })
+        const [chaosRes, agentRes] = await Promise.allSettled([
+          fetch(`${PIPELINE_URL}/api/chaos/status`, { cache: 'no-store' }),
+          fetch(`${AGENT_URL}/api/incident/latest`, { cache: 'no-store' })
         ]);
 
         if (isCancelled) return;
 
-        setPipelineOnline(pipeHealth.status === 'fulfilled' && pipeHealth.value.ok);
-        setAgentOnline(agentHealth.status === 'fulfilled' && agentHealth.value.ok);
+        let pipelineChaos: ChaosStatusResponse | null = null;
+        if (chaosRes.status === 'fulfilled' && chaosRes.value.ok) {
+          const data: ChaosStatusResponse = await chaosRes.value.json();
+          pipelineChaos = data;
+          setIsClusterDegraded(Boolean(data.isCrashed || (data.activeScenario && data.activeScenario !== 'NONE')));
+        } else {
+          setIsClusterDegraded(false);
+        }
 
         let latestAgentInc: Incident | null = null;
         if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
           const data: AgentLatestResponse = await agentRes.value.json();
           latestAgentInc = data.incident;
-        }
-
-        let pipelineChaos: ChaosStatusResponse | null = null;
-        if (chaosRes.status === 'fulfilled' && chaosRes.value.ok) {
-          pipelineChaos = await chaosRes.value.json();
         }
 
         // Case A: SRE Agent has an active incident record
@@ -281,6 +376,7 @@ export default function IncidentControlCenter() {
         // Case B: Pipeline crashed on Port 4001, ingest crash telemetry passively
         else if (pipelineChaos && pipelineChaos.isCrashed && pipelineChaos.activeIncident) {
           const inc = pipelineChaos.activeIncident;
+          setIsClusterDegraded(true);
           setIncident({
             incident_id: inc.incidentId || `inc-chaos-${Date.now()}`,
             service: 'ffmpeg-transcoder',
@@ -321,11 +417,11 @@ export default function IncidentControlCenter() {
   }, [activeStatus, clearPollTimer]);
 
   // =========================================================================
-  // Requirement 2: Synchronized "Approve & Deploy Fix" Action Handler
-  // 1. Dispatch approval to SRE Agent: POST http://localhost:8000/api/incident/:id/resume with { "action": "approve" }
-  // 2. Apply hot-patch to mock-pipeline: POST http://localhost:4001/api/patch/apply with { "patch": incident.generated_diff, "incidentId": incident.incident_id }
-  // 3. Clear fault state: POST http://localhost:4001/api/chaos/reset
-  // 4. Run a single synchronized fetch against both ports to update all UI badges to operational before settling
+  // Synchronized "Approve & Deploy Fix" Action Handler
+  // 1. Dispatch approval to SRE Agent: POST ${AGENT_URL}/api/incident/:id/resume
+  // 2. Apply hot-patch to mock-pipeline: POST ${PIPELINE_URL}/api/patch/apply
+  // 3. Clear fault state: POST ${PIPELINE_URL}/api/chaos/reset
+  // 4. Retrieve enterprise RCA post-mortem report
   // =========================================================================
   const handleApprove = async () => {
     const currentInc = incidentRef.current;
@@ -335,7 +431,7 @@ export default function IncidentControlCenter() {
     try {
       // 1. Dispatch approval to SRE Agent
       try {
-        await fetch(`http://localhost:8000/api/incident/${currentInc.incident_id}/resume`, {
+        await fetch(`${AGENT_URL}/api/incident/${currentInc.incident_id}/resume`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -351,7 +447,7 @@ export default function IncidentControlCenter() {
       // 2. Apply hot-patch to mock-pipeline
       try {
         if (currentInc.generated_diff) {
-          await fetch('http://localhost:4001/api/patch/apply', {
+          await fetch(`${PIPELINE_URL}/api/patch/apply`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -367,25 +463,18 @@ export default function IncidentControlCenter() {
 
       // 3. Clear fault state
       try {
-        await fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' });
+        await fetch(`${PIPELINE_URL}/api/chaos/reset`, { method: 'POST' });
+        setIsClusterDegraded(false);
       } catch (err) {
         console.warn('[Approval] Chaos reset error:', err);
       }
 
-      // 4. Single synchronized fetch against both ports to update UI badges to operational
+      // 4. Retrieve enterprise RCA post-mortem report
       let rcaReport = currentInc.post_mortem;
       try {
-        const [pipeHealth, agentHealth, rcaRes] = await Promise.allSettled([
-          fetch('http://localhost:4001/health', { cache: 'no-store' }),
-          fetch('http://localhost:8000/api/health', { cache: 'no-store' }),
-          fetch(`http://localhost:4001/api/enterprise/rca/${currentInc.incident_id}`, { cache: 'no-store' })
-        ]);
-
-        setPipelineOnline(pipeHealth.status === 'fulfilled' && pipeHealth.value.ok);
-        setAgentOnline(agentHealth.status === 'fulfilled' && agentHealth.value.ok);
-
-        if (rcaRes.status === 'fulfilled' && rcaRes.value.ok) {
-          const rcaData = await rcaRes.value.json();
+        const rcaRes = await fetch(`${PIPELINE_URL}/api/enterprise/rca/${currentInc.incident_id}`, { cache: 'no-store' });
+        if (rcaRes.ok) {
+          const rcaData = await rcaRes.json();
           rcaReport = `# Enterprise Incident RCA & Post-Mortem\n**Incident ID:** \`${rcaData.incidentId}\`\n**Severity:** \`${rcaData.severity}\`\n**MTTR:** \`${rcaData.mttr}\`\n**Status:** **${rcaData.verificationStatus}**\n\n### Root Cause Analysis\n${rcaData.rootCauseAnalysis?.summary || 'Automated AST patch verified and hot-reloaded.'}\n\n**Trigger Mechanism:**\n${rcaData.rootCauseAnalysis?.triggerMechanism || 'Codec parameter mismatch in FFmpeg chunk encoder.'}\n\n### Applied Code Patch\n\`\`\`diff\n${rcaData.appliedPatch || currentInc.generated_diff}\n\`\`\``;
         }
       } catch (err) {
@@ -406,36 +495,37 @@ export default function IncidentControlCenter() {
   };
 
   // =========================================================================
-  // Requirement 3: Coordinated "Reset to Nominal" Handler
+  // Coordinated "Reset to Nominal" Handler
   // - Clear chaos on Port 4001 (POST /api/chaos/reset)
   // - Clear incident records on Port 8000 (POST /api/incidents/clear)
   // - Reset incident state to null in React
-  // - Resumes the slow baseline poll (every 5000ms) to show green "ALL SYSTEMS NOMINAL"
   // =========================================================================
   const handleResetToNominal = async () => {
     // 1. Clear chaos on Port 4001 and incidents on Port 8000
     try {
       await Promise.allSettled([
-        fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' }),
-        fetch('http://localhost:8000/api/incidents/clear', { method: 'POST' })
+        fetch(`${PIPELINE_URL}/api/chaos/reset`, { method: 'POST' }),
+        fetch(`${AGENT_URL}/api/incidents/clear`, { method: 'POST' })
       ]);
     } catch (err) {
       console.warn('[Reset] Coordinated reset error:', err);
     }
 
-    // 2. Refresh infrastructure health status
-    try {
-      const [pipeHealth, agentHealth] = await Promise.allSettled([
-        fetch('http://localhost:4001/health', { cache: 'no-store' }),
-        fetch('http://localhost:8000/api/health', { cache: 'no-store' })
-      ]);
-      setPipelineOnline(pipeHealth.status === 'fulfilled' && pipeHealth.value.ok);
-      setAgentOnline(agentHealth.status === 'fulfilled' && agentHealth.value.ok);
-    } catch {
-      // Maintain previous status
-    }
+    setIsClusterDegraded(false);
+    setWorkerHealth(prev => prev ? {
+      ...prev,
+      status: 'healthy',
+      workerPool: prev.workerPool ? {
+        ...prev.workerPool,
+        activeWorkers: 4
+      } : undefined,
+      chaosState: {
+        scenario: 'NONE',
+        activeIncidentId: null
+      }
+    } : null);
 
-    // 3. Reset incident state to null in React
+    // 2. Reset incident state to null in React
     // This transitions activeStatus to 'IDLE', which automatically triggers
     // the slow baseline poll (every 5000ms) and displays the clean green nominal dashboard.
     setIncident(null);
@@ -448,7 +538,7 @@ export default function IncidentControlCenter() {
 
     setIsProcessingApproval(true);
     try {
-      await fetch(`http://localhost:8000/api/incident/${currentInc.incident_id}/resume`, {
+      await fetch(`${AGENT_URL}/api/incident/${currentInc.incident_id}/resume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -569,19 +659,31 @@ export default function IncidentControlCenter() {
                 </div>
                 <div>
                   <div className="flex items-center space-x-2">
-                    <span className="text-[11px] font-mono font-bold tracking-widest text-emerald-400 uppercase bg-emerald-950/60 px-2.5 py-0.5 rounded border border-emerald-500/30">
-                      SYSTEM STATUS: NOMINAL
+                    <span className={`text-[11px] font-mono font-bold tracking-widest uppercase px-2.5 py-0.5 rounded border ${
+                      isClusterDegraded
+                        ? 'text-amber-400 bg-amber-950/60 border-amber-500/30'
+                        : 'text-emerald-400 bg-emerald-950/60 border-emerald-500/30'
+                    }`}>
+                      {isClusterDegraded ? 'SYSTEM STATUS: CLUSTER DEGRADED' : 'SYSTEM STATUS: NOMINAL'}
                     </span>
-                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+                    <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${
+                      isClusterDegraded ? 'text-amber-400' : 'text-emerald-400'
+                    }`}>
+                      <span className={`w-2 h-2 rounded-full inline-block ${
+                        isClusterDegraded ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-ping'
+                      }`} />
                       Live Monitoring
                     </span>
                   </div>
                   <h2 className="text-2xl font-bold text-white tracking-tight mt-1.5">
-                    ALL SYSTEMS NOMINAL (0 Active Incidents)
+                    {isClusterDegraded
+                      ? `CLUSTER DEGRADED (${workerHealth?.workerPool?.activeWorkers ?? 1}/${workerHealth?.workerPool?.totalCapacity ?? 16} Workers Online)`
+                      : 'ALL SYSTEMS NOMINAL (0 Active Incidents)'}
                   </h2>
                   <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-                    CutGuard AI autonomous SRE agent is actively monitoring cluster telemetry streams (Grafana Loki &amp; OpenTelemetry). Transcoding worker pods are running within normal memory and bitrate parameters.
+                    {isClusterDegraded
+                      ? `Transcoding worker pod degradation detected on ${workerHealth?.workerPool?.cluster || 'gke-us-central1-cinema-render'} (${workerHealth?.workerPool?.nodeGroup || 'n2-highmem-16'}). Active scenario: ${workerHealth?.chaosState?.scenario || 'CORRUPTED_STREAM'}. Autonomous self-healing armed.`
+                      : 'CutGuard AI autonomous SRE agent is actively monitoring cluster telemetry streams (Grafana Loki & OpenTelemetry). Transcoding worker pods are running within normal memory and bitrate parameters.'}
                   </p>
                 </div>
               </div>
@@ -589,7 +691,7 @@ export default function IncidentControlCenter() {
               {/* Direct Navigation to Platform Visualizer */}
               <div className="flex flex-col items-start md:items-end gap-2">
                 <a
-                  href="http://localhost:4001/player"
+                  href={`${PIPELINE_URL}/player`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-indigo-950/60 border border-indigo-400/40 transition-all duration-200 active:scale-95 whitespace-nowrap"
@@ -607,42 +709,86 @@ export default function IncidentControlCenter() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6 pt-6 border-t border-slate-800/80">
               <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
                 <span className="text-[10px] font-mono uppercase text-slate-400">Transcode Throughput</span>
-                <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">1,420 chunks/min</div>
-                <div className="text-[10px] text-slate-500 font-mono">100% Target Met (60 FPS)</div>
+                <div className={`text-sm font-bold font-mono mt-0.5 ${isClusterDegraded ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  {isClusterDegraded ? '88 chunks/min (Degraded)' : '1,420 chunks/min'}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {isClusterDegraded 
+                    ? `Worker Pool: ${workerHealth?.workerPool?.activeWorkers ?? 1}/${workerHealth?.workerPool?.totalCapacity ?? 16} Active` 
+                    : `100% Target Met (${workerHealth?.workerPool?.activeWorkers ?? 4}/${workerHealth?.workerPool?.totalCapacity ?? 16} Pods)`}
+                </div>
               </div>
               <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
                 <span className="text-[10px] font-mono uppercase text-slate-400">P99 Encoding Latency</span>
-                <div className="text-sm font-bold font-mono text-cyan-400 mt-0.5">18.4 ms</div>
-                <div className="text-[10px] text-slate-500 font-mono">SLA Threshold: &lt; 50ms</div>
+                <div className={`text-sm font-bold font-mono mt-0.5 ${isClusterDegraded ? 'text-rose-400' : 'text-cyan-400'}`}>
+                  {isClusterDegraded ? '842.1 ms (Spiking)' : '18.4 ms'}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {isClusterDegraded ? 'SLA Breached (> 50ms)' : 'SLA Threshold: < 50ms'}
+                </div>
               </div>
               <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
                 <span className="text-[10px] font-mono uppercase text-slate-400">Loki Error Rate</span>
-                <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">0.00 err/sec</div>
-                <div className="text-[10px] text-slate-500 font-mono">Clean Telemetry Window</div>
+                <div className={`text-sm font-bold font-mono mt-0.5 ${isClusterDegraded ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  {isClusterDegraded ? '14.20 err/sec' : '0.00 err/sec'}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {isClusterDegraded ? `Exceptions: ${workerHealth?.chaosState?.scenario || 'ERR_TRANSCODE'}` : 'Clean Telemetry Window'}
+                </div>
               </div>
               <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
                 <span className="text-[10px] font-mono uppercase text-slate-400">Autonomous Guardrail</span>
-                <div className="text-sm font-bold font-mono text-purple-400 mt-0.5">Active Sandbox Ready</div>
-                <div className="text-[10px] text-slate-500 font-mono">AST Blast Radar Online</div>
+                <div className="text-sm font-bold font-mono text-purple-400 mt-0.5">
+                  {isClusterDegraded ? 'Self-Healing Armed' : 'Active Sandbox Ready'}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {workerHealth?.workerPool?.cluster || 'GKE Cinema Cluster'}
+                </div>
               </div>
             </div>
 
             {/* Health & Cluster Matrix */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
-              <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
+              <div className={`p-4 rounded-lg bg-slate-950/60 border space-y-1.5 transition-colors ${
+                isClusterDegraded ? 'border-amber-500/40 bg-amber-950/10' : 'border-slate-800'
+              }`}>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-400 font-semibold flex items-center gap-1.5">
                     <Server className="w-3.5 h-3.5 text-indigo-400" />
                     Transcoder Worker
                   </span>
-                  <span className={`w-2 h-2 rounded-full ${pipelineOnline ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-500'}`} />
+                  <div className="flex items-center gap-2">
+                    {isClusterDegraded && pipelineOnline && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        {workerHealth?.status === 'degraded' ? 'DEGRADED' : 'CRASHED'}
+                      </span>
+                    )}
+                    <span className={`w-2 h-2 rounded-full ${pipelineOnline ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-500'}`} />
+                  </div>
                 </div>
                 <div className="text-base font-bold font-mono text-white">
                   {pipelineOnline ? 'Port 4001 ONLINE' : 'OFFLINE'}
                 </div>
-                <div className="text-[11px] text-slate-500 font-mono">
-                  {pipelineOnline ? 'ffmpeg-transcoder pool: 4' : 'Connection refused'}
+                <div className="text-[11px] font-mono">
+                  {pipelineOnline ? (
+                    isClusterDegraded ? (
+                      <span className="text-amber-400 font-medium">
+                        Worker Corrupted • Pool {workerHealth?.workerPool?.activeWorkers ?? 1}/{workerHealth?.workerPool?.totalCapacity ?? 16} ({workerHealth?.chaosState?.scenario || 'DEGRADED'})
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">
+                        ffmpeg-transcoder pool: {workerHealth?.workerPool?.activeWorkers ?? 4}/{workerHealth?.workerPool?.totalCapacity ?? 16}
+                      </span>
+                    )
+                  ) : (
+                    <span className="text-slate-500">Connection refused</span>
+                  )}
                 </div>
+                {workerHealth?.ffmpegVersion && (
+                  <div className="text-[10px] text-slate-500 font-mono truncate" title={workerHealth.ffmpegVersion}>
+                    {workerHealth.ffmpegVersion.split(' ')[0]} {workerHealth.ffmpegVersion.split(' ')[2] || ''} • {workerHealth.workerPool?.nodeGroup || 'n2-highmem-16'}
+                  </div>
+                )}
               </div>
 
               <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
@@ -729,12 +875,30 @@ export default function IncidentControlCenter() {
                     <Server className="w-3.5 h-3.5 text-indigo-400" />
                     Cluster Telemetry
                   </span>
-                  <span className="text-[10px] font-mono text-emerald-400">GKE us-central1</span>
+                  <span className="text-[10px] font-mono text-emerald-400">
+                    {workerHealth?.workerPool?.cluster || 'gke-us-central1-cinema-render'}
+                  </span>
                 </div>
                 <div className="space-y-2 font-mono text-slate-400">
                   <div className="flex justify-between">
-                    <span>Worker Pod:</span>
-                    <span className="text-slate-200 truncate">transcode-worker-7f89b</span>
+                    <span>Worker Node:</span>
+                    <span className="text-slate-200 truncate">
+                      {workerHealth?.workerPool?.nodeGroup ? `${workerHealth.workerPool.nodeGroup}-pod` : 'n2-highmem-16-pod'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Worker Pool:</span>
+                    <span className={isClusterDegraded ? "text-amber-400 font-semibold" : "text-emerald-400 font-semibold"}>
+                      {isClusterDegraded 
+                        ? `Degraded (${workerHealth?.workerPool?.activeWorkers ?? 1}/${workerHealth?.workerPool?.totalCapacity ?? 16} Active)` 
+                        : `Nominal (${workerHealth?.workerPool?.activeWorkers ?? 4}/${workerHealth?.workerPool?.totalCapacity ?? 16} Active)`}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Active Scenario:</span>
+                    <span className="text-rose-400 font-semibold truncate max-w-[180px]" title={workerHealth?.chaosState?.scenario || 'NONE'}>
+                      {workerHealth?.chaosState?.scenario || (incident?.culprit_file ? 'UNSUPPORTED_PIXEL_FORMAT' : 'NOMINAL')}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span>Exit Signal:</span>
@@ -759,7 +923,7 @@ export default function IncidentControlCenter() {
                   <div className="flex justify-between">
                     <span>Telemetry Source:</span>
                     <span className="text-orange-400 font-mono">
-                      {pipelineOnline ? 'Live Worker :4001' : 'Simulation Mode'}
+                      {pipelineOnline ? `Port 4001 (${workerHealth?.uptimeSeconds ? `${workerHealth.uptimeSeconds}s up` : 'Live'})` : 'Simulation Mode'}
                     </span>
                   </div>
                 </div>
