@@ -80,45 +80,28 @@ pipelineRouter.get('/health', (_req: Request, res: Response) => {
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - jobId
- *               - videoUrl
- *               - targetResolution
- *               - codec
- *             properties:
- *               jobId:
- *                 type: string
- *                 example: job-cinema-84920
- *               videoUrl:
- *                 type: string
- *                 example: gs://raw-cinema-assets/scene-04-take-02.mov
- *               targetResolution:
- *                 type: string
- *                 enum: [1080p, 4k, 720p]
- *                 example: 1080p
- *               codec:
- *                 type: string
- *                 enum: [h264, hevc, av1]
- *                 example: h264
- *               pixelFormat:
- *                 type: string
- *                 enum: [yuv420p, yuv422p10le, yuv444p]
- *                 example: yuv420p
+ *             $ref: '#/components/schemas/TranscodeRequest'
  *     responses:
  *       200:
  *         description: Transcode completed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/TranscodeResponse'
  *       500:
  *         description: Transcoder process crash (SIGSEGV or SIGABRT)
  */
 pipelineRouter.post('/transcode', async (req: Request, res: Response) => {
   const {
-    jobId = `job-${Math.floor(10000 + Math.random() * 90000)}`,
-    videoUrl = 'gs://raw-cinema-assets/reel-01.mov',
-    targetResolution = '1080p',
+    jobId = req.body.videoId || `job-${Math.floor(10000 + Math.random() * 90000)}`,
+    videoId = req.body.jobId || `vid-${Math.floor(10000 + Math.random() * 90000)}`,
+    videoUrl = req.body.sourceUrl || 'gs://raw-cinema-assets/scene-04-take-02.mov',
+    sourceUrl = req.body.videoUrl || 'gs://raw-cinema-assets/scene-04-take-02.mov',
+    targetResolution = req.body.resolution || '1080p',
+    resolution = req.body.targetResolution || '1080p',
     codec = 'h264',
     pixelFormat
-  } = req.body as Partial<TranscodeOptions>;
+  } = req.body;
 
   const traceId = `trace-${Math.random().toString(36).substring(2, 9)}`;
   const activeScenario = getActiveChaosScenario();
@@ -126,8 +109,8 @@ pipelineRouter.post('/transcode', async (req: Request, res: Response) => {
   // Create or update initial job record
   const jobRecord: TranscodeJob = {
     jobId,
-    videoUrl,
-    targetResolution: targetResolution as TargetResolution,
+    videoUrl: sourceUrl,
+    targetResolution: resolution as TargetResolution,
     codec: codec as Codec,
     pixelFormat: pixelFormat as PixelFormat,
     status: 'PROCESSING',
@@ -140,8 +123,8 @@ pipelineRouter.post('/transcode', async (req: Request, res: Response) => {
   try {
     const options: TranscodeOptions = {
       jobId,
-      videoUrl,
-      targetResolution: targetResolution as TargetResolution,
+      videoUrl: sourceUrl,
+      targetResolution: resolution as TargetResolution,
       codec: codec as Codec,
       pixelFormat: (activeScenario === 'UNSUPPORTED_PIXEL_FORMAT' && !pixelFormat) ? 'yuv422p10le' : (pixelFormat || 'yuv420p'),
       scenarioOverride: activeScenario
@@ -234,7 +217,7 @@ pipelineRouter.get('/jobs', (_req: Request, res: Response) => {
  * /api/logs:
  *   get:
  *     summary: Retrieve recent structured pipeline logs
- *     description: Returns in-memory ring buffer of logs for dashboard synchronization.
+ *     description: Returns in-memory ring buffer of logs formatted for Grafana Loki scraping and dashboard synchronization.
  *     tags: [Observability]
  *     parameters:
  *       - in: query
@@ -242,13 +225,22 @@ pipelineRouter.get('/jobs', (_req: Request, res: Response) => {
  *         schema:
  *           type: integer
  *           default: 50
+ *           minimum: 1
+ *           maximum: 500
+ *         description: Maximum number of recent log events to retrieve (max 500)
+ *         example: 50
  *     responses:
  *       200:
- *         description: Recent log array
+ *         description: Structured telemetry log array
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/LogsResponse'
  */
 pipelineRouter.get('/logs', (req: Request, res: Response) => {
-  const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;
-  const logs = getRecentLogs(isNaN(limit) ? 50 : limit);
+  const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;
+  const limit = isNaN(rawLimit) ? 50 : Math.min(Math.max(rawLimit, 1), 500);
+  const logs = getRecentLogs(limit);
   return res.json({
     total: logs.length,
     limit,

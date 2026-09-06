@@ -12,6 +12,9 @@ export interface EnterpriseRCAReport {
   severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
   mttr: string;
   affectedPipelineStage: string;
+  rootCause: string;
+  affectedFile: string;
+  gitPatch: string;
   rootCauseAnalysis: {
     summary: string;
     triggerMechanism: string;
@@ -92,6 +95,9 @@ function buildRCAReport(incidentId: string): EnterpriseRCAReport {
     severity: 'CRITICAL',
     mttr: '38s',
     affectedPipelineStage: 'FFMPEG_ENCODE',
+    rootCause: summary,
+    affectedFile: failingFile,
+    gitPatch: appliedPatch,
     rootCauseAnalysis: {
       summary,
       triggerMechanism,
@@ -122,10 +128,15 @@ function buildRCAReport(incidentId: string): EnterpriseRCAReport {
  *         required: true
  *         schema:
  *           type: string
- *         example: inc-chaos-84920
+ *         example: INC-AUTO-4091
+ *         description: Unique incident identifier for root-cause audit
  *     responses:
  *       200:
- *         description: Full enterprise RCA report
+ *         description: Full enterprise RCA report with patch diff and AST impact
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/RCAReportResponse'
  */
 rcaRouter.get('/enterprise/rca/:incidentId', (req: Request, res: Response) => {
   const { incidentId } = req.params;

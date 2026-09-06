@@ -13,6 +13,7 @@ import { baseLogger, logPipelineEvent } from './logger';
 import { pipelineRouter } from './routes/pipeline';
 import { chaosRouter, getActiveChaosScenario, getActiveIncident } from './routes/chaos';
 import { rcaRouter } from './routes/rca';
+import { swaggerSpec, swaggerUiOptions } from './swagger';
 
 const app = express();
 const PORT = process.env.PORT || 4001;
@@ -21,43 +22,14 @@ const PORT = process.env.PORT || 4001;
 app.use(cors());
 app.use(express.json());
 
-// OpenAPI / Swagger Configuration
-const swaggerOptions: swaggerJsdoc.Options = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'CutGuard AI — Cloud Media Transcoding Mock Pipeline API',
-      version: '2.0.0',
-      description:
-        'Production-grade mock FFmpeg video transcoding worker pipeline for the Agentic Cinema Hackathon. Supports chaos injection, telemetry streaming, and enterprise RCA verification.',
-      contact: {
-        name: 'CutGuard AI SRE Team',
-        url: 'https://github.com/GoogleCloudPlatform'
-      }
-    },
-    servers: [
-      {
-        url: `http://localhost:${PORT}`,
-        description: 'Local Mock Transcoder Worker'
-      }
-    ]
-  },
-  apis: [
-    path.join(__dirname, 'routes', '*.ts'),
-    path.join(__dirname, 'routes', '*.js'),
-    path.join(__dirname, '..', 'src', 'routes', '*.ts'),
-    './src/routes/*.ts',
-    './dist/routes/*.js'
-  ]
-};
-
-const swaggerSpec = swaggerJsdoc(swaggerOptions);
-
 // Mount OpenAPI / Swagger docs at GET /docs
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'CutGuard AI — Transcoder API Documentation',
-  customCss: '.swagger-ui .topbar { background-color: #0f172a; } body { background-color: #030712; color: #f8fafc; }'
-}));
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+
+// Raw OpenAPI JSON spec endpoint
+app.get('/docs.json', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.send(swaggerSpec);
+});
 
 // Mount API route modules
 app.use('/api', pipelineRouter);

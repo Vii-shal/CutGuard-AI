@@ -11,6 +11,8 @@ export type ChaosScenario = 'FFMPEG_OOM' | 'UNSUPPORTED_PIXEL_FORMAT' | 'SEGMENT
 export interface IncidentState {
   incidentId: string;
   scenario: ChaosScenario;
+  targetWorker?: string;
+  severity?: string;
   errorSignature: string;
   timestamp: string;
   failingFile: string;
@@ -44,27 +46,43 @@ export const chaosRouter = Router();
  * /api/chaos/inject:
  *   post:
  *     summary: Inject a video pipeline chaos scenario
- *     description: Forces the media worker into a crash state and emits realistic FFmpeg crash telemetry.
+ *     description: Forces the media worker into a crash state and emits realistic FFmpeg crash telemetry into cluster streams.
  *     tags: [Chaos Engineering]
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - scenario
- *             properties:
- *               scenario:
- *                 type: string
- *                 enum: [FFMPEG_OOM, UNSUPPORTED_PIXEL_FORMAT, SEGMENT_CORRUPTION]
- *                 example: UNSUPPORTED_PIXEL_FORMAT
+ *             $ref: '#/components/schemas/ChaosInjectRequest'
  *     responses:
  *       200:
- *         description: Chaos scenario successfully activated
+ *         description: Chaos scenario successfully activated and telemetry emitted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: CHAOS_INJECTED
+ *                 message:
+ *                   type: string
+ *                   example: Chaos scenario 'UNSUPPORTED_PIXEL_FORMAT' triggered. Pipeline is now primed for autonomous triage.
+ *                 activeIncident:
+ *                   $ref: '#/components/schemas/ChaosInjectRequest'
+ *       400:
+ *         description: Invalid or unsupported chaos scenario specified
  */
 chaosRouter.post('/inject', (req: Request, res: Response) => {
-  const { scenario } = req.body as { scenario?: ChaosScenario };
+  const { 
+    scenario, 
+    targetWorker = 'worker-transcode-04', 
+    severity = 'CRITICAL' 
+  } = req.body as { 
+    scenario?: ChaosScenario;
+    targetWorker?: string;
+    severity?: string;
+  };
 
   if (!scenario || !['FFMPEG_OOM', 'UNSUPPORTED_PIXEL_FORMAT', 'SEGMENT_CORRUPTION'].includes(scenario)) {
     return res.status(400).json({
@@ -113,6 +131,8 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
   activeIncident = {
     incidentId,
     scenario,
+    targetWorker,
+    severity,
     errorSignature,
     timestamp,
     failingFile,
@@ -132,6 +152,8 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
     metadata: {
       incidentId,
       scenario,
+      targetWorker,
+      severity,
       exitCode,
       signal,
       failingFile
@@ -150,11 +172,15 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
  * /api/chaos/reset:
  *   post:
  *     summary: Reset chaos injection state
- *     description: Clears failure injection and resets media worker back to healthy operation.
+ *     description: Clears failure injection, restores worker pool health, and normalizes telemetry streams.
  *     tags: [Chaos Engineering]
  *     responses:
  *       200:
  *         description: Pipeline restored to healthy state
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ChaosResetResponse'
  */
 chaosRouter.post('/reset', (_req: Request, res: Response) => {
   resetChaosState();
@@ -179,10 +205,31 @@ chaosRouter.post('/reset', (_req: Request, res: Response) => {
  * /api/chaos/status:
  *   get:
  *     summary: Retrieve chaos and failure status
+ *     description: Returns whether failure is currently armed, active scenario, and active incident details.
  *     tags: [Chaos Engineering]
  *     responses:
  *       200:
  *         description: Current chaos state
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: HEALTHY
+ *                 isCrashed:
+ *                   type: boolean
+ *                   example: false
+ *                 activeScenario:
+ *                   type: string
+ *                   example: NONE
+ *                 isFailureArmed:
+ *                   type: boolean
+ *                   example: false
+ *                 activeIncident:
+ *                   type: object
+ *                   nullable: true
  */
 chaosRouter.get('/status', (_req: Request, res: Response) => {
   const isCrashed = activeScenario !== 'NONE' && activeIncident !== null;
