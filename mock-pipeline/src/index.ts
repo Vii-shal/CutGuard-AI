@@ -6,14 +6,12 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import cors from 'cors';
-import swaggerUi from 'swagger-ui-express';
-import swaggerJsdoc from 'swagger-jsdoc';
 
 import { baseLogger, logPipelineEvent } from './logger';
 import { pipelineRouter } from './routes/pipeline';
 import { chaosRouter, getActiveChaosScenario, getActiveIncident } from './routes/chaos';
 import { rcaRouter } from './routes/rca';
-import { swaggerSpec, swaggerUiOptions } from './swagger';
+import { setupSwagger } from './swagger';
 
 const app = express();
 const PORT = process.env.PORT || 4001;
@@ -22,14 +20,8 @@ const PORT = process.env.PORT || 4001;
 app.use(cors());
 app.use(express.json());
 
-// Mount OpenAPI / Swagger docs at GET /docs
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
-
-// Raw OpenAPI JSON spec endpoint
-app.get('/docs.json', (_req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'application/json');
-  res.send(swaggerSpec);
-});
+// Enterprise Swagger UI & Raw Spec Mount
+setupSwagger(app);
 
 // Mount API route modules
 app.use('/api', pipelineRouter);

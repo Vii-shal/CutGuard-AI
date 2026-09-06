@@ -1,222 +1,304 @@
 /**
- * CutGuard AI - Enterprise OpenAPI / Swagger Configuration
- * Provides dark theme styling, rich schemas, and interactive test bodies for video transcoding SRE operations.
+ * CutGuard AI - Enterprise OpenAPI / Swagger Configuration Module
+ * High-contrast developer dark theme inspired by Vercel and Supabase.
+ * Centralized design tokens, full OpenAPI 3.0.0 schemas, and clean Express integration.
  */
 
 import path from 'path';
+import { Express, Request, Response } from 'express';
+import swaggerUi, { SwaggerUiOptions } from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
-import { SwaggerUiOptions } from 'swagger-ui-express';
+
+/**
+ * Design System Tokens (Vercel & Supabase Inspired Dark Palette)
+ */
+export const THEME_TOKENS = {
+  // Surfaces & Backgrounds
+  canvas: '#090d16',
+  surface: '#111827',
+  surfaceSubtle: '#1f2937',
+  surfaceDark: '#0b0f19',
+  border: '#374151',
+  borderSubtle: '#1f2937',
+  borderFocus: '#0ea5e9',
+
+  // Typography
+  textPrimary: '#f9fafb',
+  textSecondary: '#e5e7eb',
+  textMuted: '#9ca3af',
+  textDim: '#6b7280',
+
+  // Method Accents & Status
+  post: '#10b981',
+  postBg: 'rgba(16, 185, 129, 0.10)',
+  postBorder: 'rgba(16, 185, 129, 0.35)',
+  get: '#0ea5e9',
+  getBg: 'rgba(14, 165, 233, 0.10)',
+  getBorder: 'rgba(14, 165, 233, 0.35)',
+  put: '#f59e0b',
+  putBg: 'rgba(245, 158, 11, 0.10)',
+  putBorder: 'rgba(245, 158, 11, 0.35)',
+  delete: '#ef4444',
+  deleteBg: 'rgba(239, 68, 68, 0.10)',
+  deleteBorder: 'rgba(239, 68, 68, 0.35)',
+  execute: '#059669',
+  executeHover: '#047857',
+  danger: '#ef4444',
+  dangerBg: 'rgba(239, 68, 68, 0.15)',
+  accentGlow: 'rgba(14, 165, 233, 0.25)',
+
+  // Typography Stacks & Radii
+  fontSans: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", Helvetica, Arial, sans-serif',
+  fontMono: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
+  radiusSm: '4px',
+  radiusMd: '6px',
+  radiusLg: '10px',
+  radiusXl: '12px'
+} as const;
 
 /**
  * Polished Dark Developer Theme CSS
- * Injected into Swagger UI for high contrast deep-slate / navy aesthetic.
+ * Injected dynamically using THEME_TOKENS interpolation for maximum maintainability.
  */
 export const darkThemeCss = `
-  /* Global Page & Container Resets */
-  body {
-    background-color: #030712 !important;
-    color: #e2e8f0 !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+  /* ==========================================================================
+     CutGuard AI — Enterprise Vercel/Supabase Developer Dark Theme
+     ========================================================================== */
+
+  /* Global Canvas & Typography */
+  body, html {
+    background-color: ${THEME_TOKENS.canvas} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    font-family: ${THEME_TOKENS.fontSans} !important;
     margin: 0 !important;
+    padding: 0 !important;
   }
   .swagger-ui {
-    color: #e2e8f0 !important;
+    background-color: ${THEME_TOKENS.canvas} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    font-family: ${THEME_TOKENS.fontSans} !important;
   }
   .swagger-ui .wrapper {
-    max-width: 1380px !important;
-    padding: 0 24px !important;
+    max-width: 1400px !important;
+    padding: 0 32px !important;
   }
 
-  /* Topbar Customization */
+  /* Minimal Enterprise Topbar Replacement */
   .swagger-ui .topbar {
-    background-color: #0b0f19 !important;
-    border-bottom: 1px solid #1e293b !important;
-    padding: 14px 0 !important;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+    display: none !important;
   }
-  .swagger-ui .topbar .topbar-wrapper {
-    max-width: 1380px !important;
-    padding: 0 24px !important;
-  }
-  .swagger-ui .topbar a {
-    color: #38bdf8 !important;
-    font-weight: 700 !important;
-    font-size: 16px !important;
-    letter-spacing: -0.025em !important;
-  }
-  .swagger-ui .topbar img {
-    filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.4)) !important;
+  .swagger-ui::before {
+    content: "CutGuard AI • Telemetry & Transcode Pipeline";
+    display: flex;
+    align-items: center;
+    height: 52px;
+    padding: 0 32px 0 44px;
+    background-color: ${THEME_TOKENS.surface};
+    border-bottom: 1px solid ${THEME_TOKENS.border};
+    color: ${THEME_TOKENS.textPrimary};
+    font-family: ${THEME_TOKENS.fontMono};
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    background-image: radial-gradient(circle at 24px 50%, ${THEME_TOKENS.post} 4px, transparent 5px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    position: sticky;
+    top: 0;
+    z-index: 1000;
   }
 
-  /* Info Section & Markdown Header */
+  /* Documentation Info Card */
   .swagger-ui .info {
     margin: 32px 0 !important;
-    background: #0b0f19 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 12px !important;
-    padding: 28px !important;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4) !important;
+    background: ${THEME_TOKENS.surface} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusXl} !important;
+    padding: 32px !important;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
   }
   .swagger-ui .info .title {
-    color: #f8fafc !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
     font-size: 28px !important;
     font-weight: 800 !important;
     letter-spacing: -0.03em !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     margin-bottom: 12px !important;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
   }
   .swagger-ui .info .title small {
-    background: #0284c7 !important;
+    background: ${THEME_TOKENS.get} !important;
     color: #ffffff !important;
-    border-radius: 6px !important;
-    padding: 4px 8px !important;
+    border-radius: ${THEME_TOKENS.radiusSm} !important;
+    padding: 3px 8px !important;
     font-size: 12px !important;
     font-weight: 700 !important;
     margin-left: 12px !important;
     vertical-align: middle !important;
   }
   .swagger-ui .info p, .swagger-ui .info li {
-    color: #94a3b8 !important;
+    color: ${THEME_TOKENS.textMuted} !important;
     font-size: 14px !important;
-    line-height: 1.6 !important;
+    line-height: 1.65 !important;
   }
   .swagger-ui .info h1, .swagger-ui .info h2, .swagger-ui .info h3, .swagger-ui .info h4 {
-    color: #f1f5f9 !important;
-    border-color: #334155 !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    border-color: ${THEME_TOKENS.border} !important;
   }
   .swagger-ui .info hr {
-    border-color: #1e293b !important;
+    border-color: ${THEME_TOKENS.border} !important;
     margin: 20px 0 !important;
   }
   .swagger-ui .info a {
-    color: #38bdf8 !important;
+    color: ${THEME_TOKENS.get} !important;
     text-decoration: none !important;
   }
   .swagger-ui .info a:hover {
     text-decoration: underline !important;
   }
   .swagger-ui .info code {
-    background: #020617 !important;
-    color: #38bdf8 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 4px !important;
+    background: ${THEME_TOKENS.surfaceDark} !important;
+    color: ${THEME_TOKENS.get} !important;
+    border: 1px solid ${THEME_TOKENS.borderSubtle} !important;
+    border-radius: ${THEME_TOKENS.radiusSm} !important;
     padding: 2px 6px !important;
-    font-family: ui-monospace, monospace !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 12px !important;
   }
 
-  /* Server Selector & Scheme Container */
+  /* Server / Scheme Controls */
   .swagger-ui .scheme-container {
-    background-color: #0b0f19 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 10px !important;
+    background-color: ${THEME_TOKENS.surface} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusLg} !important;
     box-shadow: none !important;
     padding: 16px 24px !important;
     margin: 24px 0 !important;
   }
   .swagger-ui .schemes > label {
-    color: #94a3b8 !important;
+    color: ${THEME_TOKENS.textMuted} !important;
     font-size: 13px !important;
     font-weight: 600 !important;
   }
   .swagger-ui .servers > label select {
-    background-color: #020617 !important;
-    color: #f8fafc !important;
-    border: 1px solid #334155 !important;
-    border-radius: 6px !important;
-    padding: 6px 12px !important;
-    font-family: ui-monospace, monospace !important;
+    background-color: ${THEME_TOKENS.surfaceDark} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
+    padding: 8px 12px !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
   }
 
-  /* Tags / Category Accordion Headers */
+  /* Section Categories (Tags) */
   .swagger-ui .opblock-tag {
-    color: #f8fafc !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
     font-size: 18px !important;
     font-weight: 700 !important;
-    font-family: ui-monospace, SFMono-Regular, monospace !important;
-    border-bottom: 1px solid #1e293b !important;
-    margin: 28px 0 12px 0 !important;
-    padding-bottom: 8px !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
+    border-bottom: 1px solid ${THEME_TOKENS.border} !important;
+    margin: 32px 0 16px 0 !important;
+    padding-bottom: 10px !important;
   }
   .swagger-ui .opblock-tag small {
-    color: #64748b !important;
+    color: ${THEME_TOKENS.textDim} !important;
+    font-size: 13px !important;
     font-weight: 400 !important;
     margin-left: 12px !important;
   }
 
-  /* Operation Block Containers */
+  /* Operational Cards */
   .swagger-ui .opblock {
-    background: #0b0f19 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 10px !important;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25) !important;
+    background: ${THEME_TOKENS.surface} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusLg} !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3) !important;
     margin: 0 0 16px !important;
     transition: all 0.2s ease !important;
   }
   .swagger-ui .opblock:hover {
-    border-color: #334155 !important;
+    border-color: ${THEME_TOKENS.borderFocus} !important;
+  }
+  .swagger-ui .opblock.is-open {
+    border-color: ${THEME_TOKENS.border} !important;
   }
   .swagger-ui .opblock .opblock-summary {
     border-bottom: 1px solid transparent !important;
-    padding: 10px 16px !important;
+    padding: 12px 18px !important;
   }
   .swagger-ui .opblock.is-open .opblock-summary {
-    border-bottom: 1px solid #1e293b !important;
+    border-bottom: 1px solid ${THEME_TOKENS.border} !important;
   }
   .swagger-ui .opblock .opblock-summary-method {
-    border-radius: 6px !important;
-    font-family: ui-monospace, monospace !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-weight: 800 !important;
     font-size: 12px !important;
     letter-spacing: 0.05em !important;
-    padding: 6px 12px !important;
+    padding: 6px 14px !important;
     text-shadow: none !important;
   }
+
+  /* Method Badges */
   .swagger-ui .opblock.opblock-post .opblock-summary-method {
-    background-color: #059669 !important;
+    background-color: ${THEME_TOKENS.post} !important;
     color: #ffffff !important;
+  }
+  .swagger-ui .opblock.opblock-post {
+    border-color: ${THEME_TOKENS.postBorder} !important;
+    background: ${THEME_TOKENS.surface} !important;
   }
   .swagger-ui .opblock.opblock-get .opblock-summary-method {
-    background-color: #0284c7 !important;
+    background-color: ${THEME_TOKENS.get} !important;
     color: #ffffff !important;
   }
-  .swagger-ui .opblock.opblock-delete .opblock-summary-method {
-    background-color: #e11d48 !important;
-    color: #ffffff !important;
+  .swagger-ui .opblock.opblock-get {
+    border-color: ${THEME_TOKENS.getBorder} !important;
+    background: ${THEME_TOKENS.surface} !important;
   }
   .swagger-ui .opblock.opblock-put .opblock-summary-method {
-    background-color: #d97706 !important;
+    background-color: ${THEME_TOKENS.put} !important;
     color: #ffffff !important;
+  }
+  .swagger-ui .opblock.opblock-put {
+    border-color: ${THEME_TOKENS.putBorder} !important;
+    background: ${THEME_TOKENS.surface} !important;
+  }
+  .swagger-ui .opblock.opblock-delete .opblock-summary-method {
+    background-color: ${THEME_TOKENS.delete} !important;
+    color: #ffffff !important;
+  }
+  .swagger-ui .opblock.opblock-delete {
+    border-color: ${THEME_TOKENS.deleteBorder} !important;
+    background: ${THEME_TOKENS.surface} !important;
   }
 
   .swagger-ui .opblock .opblock-summary-path {
-    color: #f1f5f9 !important;
-    font-family: ui-monospace, monospace !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 14px !important;
     font-weight: 600 !important;
   }
   .swagger-ui .opblock .opblock-summary-description {
-    color: #94a3b8 !important;
+    color: ${THEME_TOKENS.textMuted} !important;
     font-size: 13px !important;
   }
 
   /* Expanded Opblock Body */
   .swagger-ui .opblock-body {
-    background: #080c14 !important;
-    padding: 16px 20px !important;
-    border-bottom-left-radius: 10px !important;
-    border-bottom-right-radius: 10px !important;
+    background: ${THEME_TOKENS.canvas} !important;
+    padding: 20px 24px !important;
+    border-bottom-left-radius: ${THEME_TOKENS.radiusLg} !important;
+    border-bottom-right-radius: ${THEME_TOKENS.radiusLg} !important;
   }
   .swagger-ui .opblock-section-header {
-    background: #0f172a !important;
-    border-bottom: 1px solid #334155 !important;
-    border-radius: 6px 6px 0 0 !important;
-    padding: 8px 16px !important;
+    background: ${THEME_TOKENS.surfaceSubtle} !important;
+    border-bottom: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusMd} ${THEME_TOKENS.radiusMd} 0 0 !important;
+    padding: 10px 18px !important;
     box-shadow: none !important;
   }
   .swagger-ui .opblock-section-header h4 {
-    color: #e2e8f0 !important;
-    font-size: 13px !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    font-size: 12px !important;
     font-weight: 700 !important;
     letter-spacing: 0.05em !important;
     text-transform: uppercase !important;
@@ -224,52 +306,55 @@ export const darkThemeCss = `
   .swagger-ui .opblock-description-wrapper p,
   .swagger-ui .opblock-external-docs-wrapper p,
   .swagger-ui .opblock-title_normal p {
-    color: #cbd5e1 !important;
+    color: ${THEME_TOKENS.textSecondary} !important;
     font-size: 13px !important;
   }
 
-  /* Parameters Table */
+  /* Parameters Table Contrast Artifact Fixes */
   .swagger-ui table.parameters {
     border-collapse: collapse !important;
     width: 100% !important;
+    background: transparent !important;
   }
   .swagger-ui table.parameters thead th {
-    color: #94a3b8 !important;
-    border-bottom: 1px solid #334155 !important;
+    color: ${THEME_TOKENS.textMuted} !important;
+    border-bottom: 1px solid ${THEME_TOKENS.border} !important;
     font-size: 11px !important;
     font-weight: 700 !important;
     letter-spacing: 0.05em !important;
     text-transform: uppercase !important;
-    padding: 10px 14px !important;
+    padding: 12px 16px !important;
+    background: transparent !important;
   }
   .swagger-ui table.parameters tr td {
-    border-bottom: 1px solid #1e293b !important;
-    padding: 12px 14px !important;
+    border-bottom: 1px solid ${THEME_TOKENS.borderSubtle} !important;
+    padding: 14px 16px !important;
     vertical-align: top !important;
+    background: transparent !important;
   }
   .swagger-ui .parameter__name {
-    color: #38bdf8 !important;
-    font-family: ui-monospace, monospace !important;
+    color: ${THEME_TOKENS.get} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 13px !important;
     font-weight: 700 !important;
   }
   .swagger-ui .parameter__name.required:after {
-    color: #f43f5e !important;
+    color: ${THEME_TOKENS.danger} !important;
     font-size: 14px !important;
   }
   .swagger-ui .parameter__type {
     color: #c084fc !important;
-    font-family: ui-monospace, monospace !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 12px !important;
   }
   .swagger-ui .parameter__in {
-    color: #64748b !important;
-    font-family: ui-monospace, monospace !important;
+    color: ${THEME_TOKENS.textDim} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 11px !important;
     font-style: italic !important;
   }
   .swagger-ui .parameter__extension, .swagger-ui .parameter__sub_type {
-    color: #94a3b8 !important;
+    color: ${THEME_TOKENS.textMuted} !important;
     font-size: 11px !important;
   }
 
@@ -277,184 +362,187 @@ export const darkThemeCss = `
   .swagger-ui table.responses-table {
     width: 100% !important;
     border-collapse: collapse !important;
+    background: transparent !important;
   }
   .swagger-ui table.responses-table thead th {
-    color: #94a3b8 !important;
-    border-bottom: 1px solid #334155 !important;
+    color: ${THEME_TOKENS.textMuted} !important;
+    border-bottom: 1px solid ${THEME_TOKENS.border} !important;
     font-size: 11px !important;
     font-weight: 700 !important;
     letter-spacing: 0.05em !important;
     text-transform: uppercase !important;
-    padding: 10px 14px !important;
+    padding: 12px 16px !important;
+    background: transparent !important;
   }
   .swagger-ui table.responses-table tr td {
-    border-bottom: 1px solid #1e293b !important;
-    padding: 12px 14px !important;
+    border-bottom: 1px solid ${THEME_TOKENS.borderSubtle} !important;
+    padding: 14px 16px !important;
+    background: transparent !important;
   }
   .swagger-ui .response-col_status {
-    color: #34d399 !important;
-    font-family: ui-monospace, monospace !important;
+    color: ${THEME_TOKENS.post} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 14px !important;
     font-weight: 800 !important;
   }
   .swagger-ui .response-col_description__inner div.markdown p {
-    color: #cbd5e1 !important;
+    color: ${THEME_TOKENS.textSecondary} !important;
     font-size: 13px !important;
     margin: 0 !important;
   }
 
-  /* Inputs, Textareas, and Dropdown Selectors */
+  /* Form Inputs (Vercel / Supabase Style) */
   .swagger-ui input[type=text],
   .swagger-ui textarea,
   .swagger-ui select {
-    background-color: #020617 !important;
-    color: #f8fafc !important;
-    border: 1px solid #334155 !important;
-    border-radius: 6px !important;
+    background-color: ${THEME_TOKENS.surface} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
     padding: 8px 12px !important;
-    font-family: ui-monospace, monospace !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 12px !important;
     outline: none !important;
-    transition: border-color 0.2s ease !important;
+    transition: all 0.2s ease !important;
   }
   .swagger-ui input[type=text]:focus,
   .swagger-ui textarea:focus,
   .swagger-ui select:focus {
-    border-color: #38bdf8 !important;
-    box-shadow: 0 0 0 1px #38bdf8 !important;
+    border-color: ${THEME_TOKENS.borderFocus} !important;
+    box-shadow: 0 0 0 2px ${THEME_TOKENS.accentGlow} !important;
+    background-color: ${THEME_TOKENS.surfaceSubtle} !important;
   }
   .swagger-ui select option {
-    background-color: #020617 !important;
-    color: #f8fafc !important;
+    background-color: ${THEME_TOKENS.surface} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
   }
   .swagger-ui .body-param__text {
-    background-color: #020617 !important;
-    color: #f8fafc !important;
-    border: 1px solid #334155 !important;
-    border-radius: 6px !important;
-    font-family: ui-monospace, monospace !important;
+    background-color: ${THEME_TOKENS.surfaceDark} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 12px !important;
-    line-height: 1.5 !important;
+    line-height: 1.6 !important;
   }
 
-  /* Buttons ("Try it out", "Execute", "Cancel") */
+  /* Action Buttons */
   .swagger-ui .btn {
-    border-radius: 6px !important;
-    border: 1px solid #334155 !important;
-    color: #cbd5e1 !important;
-    background: #0f172a !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    color: ${THEME_TOKENS.textSecondary} !important;
+    background: ${THEME_TOKENS.surfaceSubtle} !important;
     font-size: 12px !important;
     font-weight: 600 !important;
-    padding: 6px 14px !important;
+    padding: 7px 16px !important;
     box-shadow: none !important;
     transition: all 0.2s ease !important;
   }
   .swagger-ui .btn:hover {
-    background: #1e293b !important;
+    background: ${THEME_TOKENS.border} !important;
     color: #ffffff !important;
-    border-color: #475569 !important;
   }
   .swagger-ui .btn.try-out__btn {
-    color: #38bdf8 !important;
-    border-color: #0284c7 !important;
-    background: rgba(2, 132, 199, 0.15) !important;
+    color: ${THEME_TOKENS.get} !important;
+    border-color: ${THEME_TOKENS.getBorder} !important;
+    background: ${THEME_TOKENS.getBg} !important;
   }
   .swagger-ui .btn.try-out__btn:hover {
-    background: rgba(2, 132, 199, 0.3) !important;
+    background: rgba(14, 165, 233, 0.25) !important;
     color: #ffffff !important;
   }
   .swagger-ui .btn.execute {
-    background-color: #2563eb !important;
+    background-color: ${THEME_TOKENS.execute} !important;
     color: #ffffff !important;
-    border-color: #3b82f6 !important;
+    border-color: ${THEME_TOKENS.post} !important;
     font-weight: 700 !important;
-    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4) !important;
+    box-shadow: 0 2px 8px rgba(5, 150, 105, 0.4) !important;
   }
   .swagger-ui .btn.execute:hover {
-    background-color: #1d4ed8 !important;
-    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.6) !important;
+    background-color: ${THEME_TOKENS.executeHover} !important;
+    box-shadow: 0 4px 14px rgba(5, 150, 105, 0.6) !important;
   }
   .swagger-ui .btn.cancel {
-    border-color: #e11d48 !important;
-    background-color: rgba(225, 29, 72, 0.15) !important;
-    color: #fb7185 !important;
+    border-color: ${THEME_TOKENS.danger} !important;
+    background-color: ${THEME_TOKENS.dangerBg} !important;
+    color: ${THEME_TOKENS.danger} !important;
   }
   .swagger-ui .btn.cancel:hover {
-    background-color: rgba(225, 29, 72, 0.3) !important;
+    background-color: rgba(239, 68, 68, 0.3) !important;
+    color: #ffffff !important;
   }
 
-  /* Code Blocks, Response Bodies & Syntax Highlighting */
+  /* Code Blocks & Response Previews */
   .swagger-ui .highlight-code pre,
   .swagger-ui pre.microlight {
-    background: #020617 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 8px !important;
-    color: #f1f5f9 !important;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    background: ${THEME_TOKENS.surfaceDark} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusLg} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 12px !important;
-    padding: 14px !important;
+    padding: 16px !important;
     line-height: 1.6 !important;
   }
   .swagger-ui pre.microlight code {
-    color: #f1f5f9 !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
   }
   .swagger-ui .model-box {
-    background-color: #020617 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 6px !important;
-    padding: 10px !important;
+    background-color: ${THEME_TOKENS.surfaceDark} !important;
+    border: 1px solid ${THEME_TOKENS.borderSubtle} !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
+    padding: 12px !important;
   }
   .swagger-ui .model {
-    color: #cbd5e1 !important;
-    font-family: ui-monospace, monospace !important;
+    color: ${THEME_TOKENS.textSecondary} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 12px !important;
   }
   .swagger-ui .model-title {
-    color: #f1f5f9 !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
     font-weight: 700 !important;
   }
   .swagger-ui .prop-type {
     color: #c084fc !important;
   }
   .swagger-ui .prop-format {
-    color: #64748b !important;
+    color: ${THEME_TOKENS.textDim} !important;
   }
 
   /* Models Section at Bottom */
   .swagger-ui section.models {
-    border: 1px solid #1e293b !important;
-    border-radius: 10px !important;
-    background-color: #0b0f19 !important;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25) !important;
-    margin: 36px 0 !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusLg} !important;
+    background-color: ${THEME_TOKENS.surface} !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3) !important;
+    margin: 40px 0 !important;
   }
   .swagger-ui section.models h4 {
-    color: #94a3b8 !important;
-    font-size: 14px !important;
+    color: ${THEME_TOKENS.textMuted} !important;
+    font-size: 13px !important;
     font-weight: 700 !important;
     letter-spacing: 0.05em !important;
     text-transform: uppercase !important;
-    border-bottom: 1px solid #1e293b !important;
-    padding: 12px 18px !important;
+    border-bottom: 1px solid ${THEME_TOKENS.border} !important;
+    padding: 14px 20px !important;
   }
 
-  /* Filter / Search Bar */
+  /* Live Duration & Filter Search */
   .swagger-ui .filter .operation-filter-input {
-    background-color: #020617 !important;
-    color: #f8fafc !important;
-    border: 1px solid #334155 !important;
-    border-radius: 8px !important;
-    padding: 8px 14px !important;
+    background-color: ${THEME_TOKENS.surface} !important;
+    color: ${THEME_TOKENS.textPrimary} !important;
+    border: 1px solid ${THEME_TOKENS.border} !important;
+    border-radius: ${THEME_TOKENS.radiusMd} !important;
+    padding: 10px 16px !important;
     font-size: 13px !important;
   }
   .swagger-ui .filter .operation-filter-input:focus {
-    border-color: #38bdf8 !important;
+    border-color: ${THEME_TOKENS.borderFocus} !important;
+    box-shadow: 0 0 0 2px ${THEME_TOKENS.accentGlow} !important;
   }
-
-  /* Live Duration & Status Tag Badges */
   .swagger-ui .response_duration {
-    color: #38bdf8 !important;
-    font-family: ui-monospace, monospace !important;
+    color: ${THEME_TOKENS.get} !important;
+    font-family: ${THEME_TOKENS.fontMono} !important;
     font-size: 11px !important;
     font-weight: 600 !important;
     margin-left: 10px !important;
@@ -722,6 +810,7 @@ export const swaggerSpec = swaggerJsdoc(swaggerOptions);
 export const swaggerUiOptions: SwaggerUiOptions = {
   customSiteTitle: 'CutGuard AI - Transcoding Cluster & SRE Telemetry API',
   customCss: darkThemeCss,
+  customfavIcon: 'https://img.icons8.com/color/48/film-reel.png',
   swaggerOptions: {
     persistAuthorization: true,
     displayRequestDuration: true,
@@ -732,3 +821,24 @@ export const swaggerUiOptions: SwaggerUiOptions = {
     defaultModelExpandDepth: 2
   }
 };
+
+/**
+ * Single-call Express Integration Setup
+ * Mounts interactive Swagger UI documentation at GET /docs and raw OpenAPI JSON spec at GET /docs.json
+ *
+ * @param app Express Application instance
+ */
+export function setupSwagger(app: Express): void {
+  // Mount interactive Swagger UI docs at GET /docs
+  app.use(
+    '/docs',
+    swaggerUi.serve,
+    swaggerUi.setup(swaggerSpec, swaggerUiOptions)
+  );
+
+  // Expose raw OpenAPI JSON specification endpoint
+  app.get('/docs.json', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.json(swaggerSpec);
+  });
+}
