@@ -87,8 +87,9 @@ async def triage_node(state: IncidentState) -> Dict[str, Any]:
                 f"Identify the relative culprit file path and the root cause exception.\n"
                 f"Respond ONLY in valid JSON format: {{\"culprit_file\": \"path/to/file.js\", \"error_summary\": \"...\", \"culprit_line\": 32}}"
             )
+            model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model_name,
                 contents=prompt
             )
             text = response.text.strip()
@@ -176,8 +177,9 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                 f"Instead, gracefully fallback to DEFAULT_PRESETS['720p_auto'] or {{ targetBitrate: '4500k', resolution: '1280x720' }}.\n"
                 f"Return ONLY the valid unified diff block starting with '--- a/{culprit_file}' and '+++ b/{culprit_file}'."
             )
+            model_name = os.getenv("GEMINI_PRO_MODEL", "gemini-2.0-flash")
             response = client.models.generate_content(
-                model="gemini-2.5-pro",
+                model=model_name,
                 contents=prompt
             )
             text = response.text.strip()
@@ -195,15 +197,10 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
         generated_diff = (
             f"--- a/{culprit_file}\n"
             f"+++ b/{culprit_file}\n"
-            f"@@ -30,12 +30,8 @@ function processVideoChunk(chunk) {{\n"
+            f"@@ -30,6 +30,8 @@ function processVideoChunk(chunk) {{\n"
             f"   const duration = chunk.videoLengthSec || 10;\n"
             f" \n"
-            f"-  // CRITICAL FAILURE POINT:\n"
-            f"-  // In production, when client manifests omit bitrateProfile, this throws SIGABRT OOM\n"
-            f"-  if (!chunk.bitrateProfile) {{\n"
-            f"-    throw new Error(\"CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)\");\n"
-            f"-  }}\n"
-            f"-\n"
+            f"-  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137\n"
             f"-  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n"
             f"-  const resolution = chunk.bitrateProfile.resolution || '1280x720';\n"
             f"+  // Fallback to 720p_auto profile when bitrateProfile is omitted\n"

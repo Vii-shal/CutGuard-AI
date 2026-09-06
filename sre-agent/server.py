@@ -47,6 +47,11 @@ ACTIVE_WEBSOCKETS: Dict[str, List[WebSocket]] = {}
 class TriggerRequest(BaseModel):
     service_name: Optional[str] = "ffmpeg-transcoder"
     custom_log: Optional[str] = None
+    incident_id: Optional[str] = None
+    errorSignature: Optional[str] = None
+    target_file: Optional[str] = None
+    failing_file: Optional[str] = None
+    scenario: Optional[str] = None
 
 
 class ResumeRequest(BaseModel):
@@ -134,14 +139,16 @@ async def trigger_incident(req: TriggerRequest, background_tasks: BackgroundTask
     Initiates an autonomous SRE incident remediation cycle.
     """
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    incident_id = f"inc-{timestamp_str}-{uuid.uuid4().hex[:4]}"
+    incident_id = req.incident_id or f"inc-{timestamp_str}-{uuid.uuid4().hex[:4]}"
+    raw_log = req.custom_log or req.errorSignature or ""
+    culprit_file = req.target_file or req.failing_file or "mock-pipeline/worker.js"
 
     initial_record = {
         "incident_id": incident_id,
         "service": req.service_name or "ffmpeg-transcoder",
         "status": "INITIALIZING",
-        "raw_log": req.custom_log or "",
-        "culprit_file": "mock-pipeline/worker.js",
+        "raw_log": raw_log,
+        "culprit_file": culprit_file,
         "culprit_commit": "HEAD~1",
         "blast_score": 0,
         "blast_details": {},
@@ -231,6 +238,23 @@ async def list_incidents():
     incidents_list = list(INCIDENTS_DB.values())
     incidents_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {"incidents": incidents_list}
+
+
+@app.get("/api/incident/latest")
+async def get_latest_incident():
+    """Returns the most recent incident or null if none exist."""
+    if not INCIDENTS_DB:
+        return {"incident": None}
+    incidents_list = list(INCIDENTS_DB.values())
+    incidents_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return {"incident": incidents_list[0]}
+
+
+@app.post("/api/incidents/clear")
+async def clear_incidents():
+    """Clears all in-memory incident records to return cluster monitoring to nominal."""
+    INCIDENTS_DB.clear()
+    return {"status": "CLEARED", "message": "All incident records cleared."}
 
 
 @app.websocket("/ws/{incident_id}")

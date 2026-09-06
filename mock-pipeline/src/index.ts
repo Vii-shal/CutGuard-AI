@@ -11,6 +11,7 @@ import { baseLogger, logPipelineEvent } from './logger';
 import { pipelineRouter } from './routes/pipeline';
 import { chaosRouter, getActiveChaosScenario, getActiveIncident } from './routes/chaos';
 import { rcaRouter } from './routes/rca';
+import { playerRouter } from './routes/player';
 import { setupSwagger } from './swagger';
 
 const app = express();
@@ -28,6 +29,7 @@ app.use('/api', pipelineRouter);
 app.use('/', pipelineRouter); // Also mount /health directly
 app.use('/api/chaos', chaosRouter);
 app.use('/api', rcaRouter);
+app.use('/', playerRouter); // Mount GET /player visualizer
 
 // Interactive Landing Page UI at GET /
 app.get('/', (req: Request, res: Response) => {
@@ -39,7 +41,9 @@ app.get('/', (req: Request, res: Response) => {
       status: 'ONLINE',
       port: PORT,
       docsUrl: `http://localhost:${PORT}/docs`,
+      playerUrl: `http://localhost:${PORT}/player`,
       endpoints: {
+        playerVisualizer: `GET /player`,
         health: `GET /health`,
         transcode: `POST /api/transcode`,
         jobs: `GET /api/jobs`,
@@ -92,6 +96,10 @@ app.get('/', (req: Request, res: Response) => {
       </div>
 
       <div class="flex items-center space-x-3">
+        <a href="/player" class="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition shadow-lg shadow-cyan-600/20 flex items-center gap-1.5">
+          <span>▶ Watch Stream Player</span>
+          <span>&nearr;</span>
+        </a>
         <a href="/docs" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-indigo-600/20 flex items-center gap-1.5">
           <span>Explore OpenAPI / Swagger</span>
           <span>&rarr;</span>

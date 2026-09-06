@@ -58,7 +58,12 @@ def _apply_fallback_to_file(diff_text: str, target_dir: str) -> bool:
     with open(worker_path, "r", encoding="utf-8") as f:
         file_text = f.read()
 
-    target_bug = (
+    target_bug_1 = (
+        "  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137\n"
+        "  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n"
+        "  const resolution = chunk.bitrateProfile.resolution || '1280x720';"
+    )
+    target_bug_2 = (
         '  if (!chunk.bitrateProfile) {\n'
         '    throw new Error("CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)");\n'
         '  }\n\n'
@@ -72,13 +77,22 @@ def _apply_fallback_to_file(diff_text: str, target_dir: str) -> bool:
         '  const resolution = profile.resolution || \'1280x720\';'
     )
 
-    if target_bug in file_text:
-        file_text = file_text.replace(target_bug, replacement, 1)
-    elif target_bug.replace('\n', '\r\n') in file_text:
-        file_text = file_text.replace(target_bug.replace('\n', '\r\n'), replacement.replace('\n', '\r\n'), 1)
+    if target_bug_1 in file_text:
+        file_text = file_text.replace(target_bug_1, replacement, 1)
+    elif target_bug_1.replace('\n', '\r\n') in file_text:
+        file_text = file_text.replace(target_bug_1.replace('\n', '\r\n'), replacement.replace('\n', '\r\n'), 1)
+    elif target_bug_2 in file_text:
+        file_text = file_text.replace(target_bug_2, replacement, 1)
+    elif target_bug_2.replace('\n', '\r\n') in file_text:
+        file_text = file_text.replace(target_bug_2.replace('\n', '\r\n'), replacement.replace('\n', '\r\n'), 1)
+    elif "const targetBitrate = chunk.bitrateProfile.targetBitrate;" in file_text:
+        file_text = file_text.replace(
+            "const targetBitrate = chunk.bitrateProfile.targetBitrate;\n  const resolution = chunk.bitrateProfile.resolution || '1280x720';",
+            replacement.strip(),
+            1
+        )
     else:
-        # Regex fallback
-        pattern = r'if\s*\(!chunk\.bitrateProfile\)\s*\{[^}]+\}\s*const\s+targetBitrate\s*=\s*chunk\.bitrateProfile\.targetBitrate;\s*const\s+resolution\s*=\s*chunk\.bitrateProfile\.resolution[^;]*;'
+        pattern = r'(// BUG:[^\n]*\n\s*)?const\s+targetBitrate\s*=\s*chunk\.bitrateProfile\.targetBitrate;\s*const\s+resolution\s*=\s*chunk\.bitrateProfile\.resolution[^;]*;'
         file_text = re.sub(pattern, replacement, file_text)
 
     with open(worker_path, "w", encoding="utf-8") as f:

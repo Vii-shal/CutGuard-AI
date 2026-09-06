@@ -45,35 +45,36 @@ export const chaosRouter = Router();
  * @openapi
  * /api/chaos/inject:
  *   post:
- *     summary: Inject a video pipeline chaos scenario
- *     description: Forces the media worker into a crash state and emits realistic FFmpeg crash telemetry into cluster streams.
+ *     summary: Simulate Corrupt Stream Payload / Chaos Failure
+ *     description: Forces the media worker into a crash state, emits structured FFmpeg crash telemetry into cluster streams (/api/logs), and immediately dispatches an incident webhook notification to CutGuard SRE Agent (:8000).
  *     tags: [Chaos Engineering]
  *     requestBody:
- *       required: true
+ *       required: false
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - scenario
  *             properties:
  *               scenario:
  *                 type: string
  *                 enum: [UNSUPPORTED_PIXEL_FORMAT, FFMPEG_OOM, SEGMENT_CORRUPTION]
+ *                 default: UNSUPPORTED_PIXEL_FORMAT
  *                 example: UNSUPPORTED_PIXEL_FORMAT
- *                 description: Simulated failure scenario to trigger in the video worker
+ *                 description: Simulated failure scenario (defaults to corrupt stream payload UNSUPPORTED_PIXEL_FORMAT)
  *               targetWorker:
  *                 type: string
+ *                 default: worker-transcode-04
  *                 example: worker-transcode-04
  *                 description: Identifier of the target transcoder pod
  *               severity:
  *                 type: string
  *                 enum: [CRITICAL, HIGH, MEDIUM]
+ *                 default: CRITICAL
  *                 example: CRITICAL
  *                 description: Failure severity level classification
  *     responses:
  *       200:
- *         description: Chaos scenario successfully activated and telemetry emitted
+ *         description: Chaos scenario successfully activated, telemetry logged, and SRE webhook dispatched
  *         content:
  *           application/json:
  *             schema:
@@ -84,24 +85,22 @@ export const chaosRouter = Router();
  *                   example: CHAOS_INJECTED
  *                 message:
  *                   type: string
- *                   example: Chaos scenario 'UNSUPPORTED_PIXEL_FORMAT' triggered. Pipeline is now primed for autonomous triage.
+ *                   example: Chaos scenario 'UNSUPPORTED_PIXEL_FORMAT' triggered. Telemetry emitted and SRE Agent webhook dispatched.
+ *                 agentDispatched:
+ *                   type: boolean
+ *                   example: true
  *                 activeIncident:
  *                   type: object
  *       400:
  *         description: Invalid or unsupported chaos scenario specified
  */
-chaosRouter.post('/inject', (req: Request, res: Response) => {
-  const { 
-    scenario, 
-    targetWorker = 'worker-transcode-04', 
-    severity = 'CRITICAL' 
-  } = req.body as { 
-    scenario?: ChaosScenario;
-    targetWorker?: string;
-    severity?: string;
-  };
+chaosRouter.post('/inject', async (req: Request, res: Response) => {
+  const reqBody = (req.body && typeof req.body === 'object') ? req.body : {};
+  const scenario: ChaosScenario = reqBody.scenario || 'UNSUPPORTED_PIXEL_FORMAT';
+  const targetWorker: string = reqBody.targetWorker || 'worker-transcode-04';
+  const severity: string = reqBody.severity || 'CRITICAL';
 
-  if (!scenario || !['FFMPEG_OOM', 'UNSUPPORTED_PIXEL_FORMAT', 'SEGMENT_CORRUPTION'].includes(scenario)) {
+  if (!['FFMPEG_OOM', 'UNSUPPORTED_PIXEL_FORMAT', 'SEGMENT_CORRUPTION'].includes(scenario)) {
     return res.status(400).json({
       error: "INVALID_SCENARIO",
       message: "Supported scenarios: 'FFMPEG_OOM', 'UNSUPPORTED_PIXEL_FORMAT', 'SEGMENT_CORRUPTION'"
@@ -160,7 +159,7 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
     rawStderr: stderrLog
   };
 
-  // Emit realistic stderr trace to logger
+  // Requirement 2: Automatically emit structured error logs into the in-memory log buffer (/api/logs)
   logPipelineEvent({
     level: scenario === 'FFMPEG_OOM' ? 'fatal' : 'error',
     stage: scenario === 'SEGMENT_CORRUPTION' ? '[MUXER]' : '[FFMPEG_ENCODE]',
@@ -177,9 +176,41 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
     }
   });
 
+  // Requirement 2: Immediately dispatch an incident webhook notification to CutGuard SRE Agent:
+  // POST http://localhost:8000/api/incident/trigger with incident_id, errorSignature, and target file (mock-pipeline/worker.js)
+  let agentDispatched = false;
+  try {
+    const agentPort = process.env.AGENT_PORT || 8000;
+    const webhookRes = await fetch(`http://localhost:${agentPort}/api/incident/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        incident_id: incidentId,
+        errorSignature,
+        failingFile,
+        target_file: failingFile,
+        service_name: 'ffmpeg-transcoder',
+        custom_log: stderrLog,
+        scenario
+      })
+    });
+    agentDispatched = webhookRes.ok;
+    if (agentDispatched) {
+      logPipelineEvent({
+        level: 'info',
+        stage: '[WEBHOOK]',
+        message: `Dispatched incident webhook to CutGuard SRE Agent (:8000) for ${incidentId}`,
+        metadata: { incidentId, agentStatus: webhookRes.status }
+      });
+    }
+  } catch (err: any) {
+    console.warn(`[Chaos] Telemetry webhook to SRE Agent (:8000) notice: ${err?.message || err}`);
+  }
+
   return res.json({
     status: 'CHAOS_INJECTED',
-    message: `Chaos scenario '${scenario}' triggered. Pipeline is now primed for autonomous triage.`,
+    message: `Chaos scenario '${scenario}' triggered. Telemetry emitted and SRE Agent webhook dispatched.`,
+    agentDispatched,
     activeIncident
   });
 });
