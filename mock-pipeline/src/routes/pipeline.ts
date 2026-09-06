@@ -1,0 +1,257 @@
+/**
+ * CutGuard AI - Media Pipeline Routes
+ * Provides health checks, transcode job initiation, job tracking, and structured log streaming.
+ */
+
+import { Router, Request, Response } from 'express';
+import { logPipelineEvent, getRecentLogs } from '../logger';
+import { 
+  executeTranscodeSimulation, 
+  TranscodeOptions, 
+  TargetResolution, 
+  Codec, 
+  PixelFormat 
+} from '../transcoder/ffmpegArgs';
+import { getActiveChaosScenario, getActiveIncident } from './chaos';
+
+export interface TranscodeJob {
+  jobId: string;
+  videoUrl: string;
+  targetResolution: TargetResolution;
+  codec: Codec;
+  pixelFormat?: PixelFormat;
+  status: 'QUEUED' | 'PROCESSING' | 'FAILED' | 'COMPLETED';
+  progress: number;
+  outputManifestUrl?: string;
+  error?: string;
+  exitCode?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const jobsStore = new Map<string, TranscodeJob>();
+const startTime = Date.now();
+
+export const pipelineRouter = Router();
+
+/**
+ * @openapi
+ * /health:
+ *   get:
+ *     summary: Transcoding Service Health Check
+ *     description: Returns worker pool capacity, system uptime, and FFmpeg build metadata.
+ *     tags: [Core Pipeline]
+ *     responses:
+ *       200:
+ *         description: Healthy worker status
+ */
+pipelineRouter.get('/health', (_req: Request, res: Response) => {
+  const activeScenario = getActiveChaosScenario();
+  const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
+
+  return res.json({
+    status: activeScenario === 'NONE' ? 'healthy' : 'degraded',
+    service: 'cutguard-mock-transcoder',
+    uptimeSeconds,
+    workerPool: {
+      activeWorkers: activeScenario === 'NONE' ? 4 : 1,
+      totalCapacity: 16,
+      cluster: 'gke-us-central1-cinema-render',
+      nodeGroup: 'n2-highmem-16'
+    },
+    ffmpegVersion: 'ffmpeg version 6.1.1-cutguard-custom-gke (c) 2000-2023 the FFmpeg developers',
+    codecsSupported: ['libx264', 'libx265', 'libsvtav1'],
+    chaosState: {
+      scenario: activeScenario,
+      activeIncidentId: getActiveIncident()?.incidentId || null
+    }
+  });
+});
+
+/**
+ * @openapi
+ * /api/transcode:
+ *   post:
+ *     summary: Initiate a video chunk transcoding job
+ *     description: Dispatches a video encoding task across the pipeline stages with structured observability.
+ *     tags: [Core Pipeline]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - jobId
+ *               - videoUrl
+ *               - targetResolution
+ *               - codec
+ *             properties:
+ *               jobId:
+ *                 type: string
+ *                 example: job-cinema-84920
+ *               videoUrl:
+ *                 type: string
+ *                 example: gs://raw-cinema-assets/scene-04-take-02.mov
+ *               targetResolution:
+ *                 type: string
+ *                 enum: [1080p, 4k, 720p]
+ *                 example: 1080p
+ *               codec:
+ *                 type: string
+ *                 enum: [h264, hevc, av1]
+ *                 example: h264
+ *               pixelFormat:
+ *                 type: string
+ *                 enum: [yuv420p, yuv422p10le, yuv444p]
+ *                 example: yuv420p
+ *     responses:
+ *       200:
+ *         description: Transcode completed successfully
+ *       500:
+ *         description: Transcoder process crash (SIGSEGV or SIGABRT)
+ */
+pipelineRouter.post('/transcode', async (req: Request, res: Response) => {
+  const {
+    jobId = `job-${Math.floor(10000 + Math.random() * 90000)}`,
+    videoUrl = 'gs://raw-cinema-assets/reel-01.mov',
+    targetResolution = '1080p',
+    codec = 'h264',
+    pixelFormat
+  } = req.body as Partial<TranscodeOptions>;
+
+  const traceId = `trace-${Math.random().toString(36).substring(2, 9)}`;
+  const activeScenario = getActiveChaosScenario();
+
+  // Create or update initial job record
+  const jobRecord: TranscodeJob = {
+    jobId,
+    videoUrl,
+    targetResolution: targetResolution as TargetResolution,
+    codec: codec as Codec,
+    pixelFormat: pixelFormat as PixelFormat,
+    status: 'PROCESSING',
+    progress: 15,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  jobsStore.set(jobId, jobRecord);
+
+  try {
+    const options: TranscodeOptions = {
+      jobId,
+      videoUrl,
+      targetResolution: targetResolution as TargetResolution,
+      codec: codec as Codec,
+      pixelFormat: (activeScenario === 'UNSUPPORTED_PIXEL_FORMAT' && !pixelFormat) ? 'yuv422p10le' : (pixelFormat || 'yuv420p'),
+      scenarioOverride: activeScenario
+    };
+
+    const result = await executeTranscodeSimulation(options, traceId);
+
+    jobRecord.status = 'COMPLETED';
+    jobRecord.progress = 100;
+    jobRecord.outputManifestUrl = result.outputManifestUrl;
+    jobRecord.updatedAt = new Date().toISOString();
+    jobsStore.set(jobId, jobRecord);
+
+    return res.json({
+      status: 'COMPLETED',
+      jobId,
+      traceId,
+      result
+    });
+
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    const exitCode = activeScenario === 'FFMPEG_OOM' ? 137 : 139;
+
+    jobRecord.status = 'FAILED';
+    jobRecord.progress = 45;
+    jobRecord.error = errorMsg;
+    jobRecord.exitCode = exitCode;
+    jobRecord.updatedAt = new Date().toISOString();
+    jobsStore.set(jobId, jobRecord);
+
+    return res.status(500).json({
+      status: 'FAILED',
+      jobId,
+      traceId,
+      exitCode,
+      error: errorMsg,
+      failingStage: 'FFMPEG_ENCODE',
+      failingFile: 'src/transcoder/ffmpegArgs.ts'
+    });
+  }
+});
+
+/**
+ * @openapi
+ * /api/jobs/{id}:
+ *   get:
+ *     summary: Query state of a specific transcoding job
+ *     tags: [Core Pipeline]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Job details
+ *       404:
+ *         description: Job not found
+ */
+pipelineRouter.get('/jobs/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const job = jobsStore.get(id);
+
+  if (!job) {
+    return res.status(404).json({ error: "JOB_NOT_FOUND", message: `No transcoding job found with ID: ${id}` });
+  }
+
+  return res.json(job);
+});
+
+/**
+ * @openapi
+ * /api/jobs:
+ *   get:
+ *     summary: List recent transcoding jobs
+ *     tags: [Core Pipeline]
+ *     responses:
+ *       200:
+ *         description: List of jobs
+ */
+pipelineRouter.get('/jobs', (_req: Request, res: Response) => {
+  const list = Array.from(jobsStore.values()).reverse();
+  return res.json({ total: list.length, jobs: list });
+});
+
+/**
+ * @openapi
+ * /api/logs:
+ *   get:
+ *     summary: Retrieve recent structured pipeline logs
+ *     description: Returns in-memory ring buffer of logs for dashboard synchronization.
+ *     tags: [Observability]
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *     responses:
+ *       200:
+ *         description: Recent log array
+ */
+pipelineRouter.get('/logs', (req: Request, res: Response) => {
+  const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;
+  const logs = getRecentLogs(isNaN(limit) ? 50 : limit);
+  return res.json({
+    total: logs.length,
+    limit,
+    logs
+  });
+});
