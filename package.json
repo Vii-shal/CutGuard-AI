@@ -1,0 +1,22 @@
+{
+  "name": "cutguard-ai-monorepo",
+  "version": "1.0.0",
+  "description": "CutGuard AI — Autonomous Video Transcoding Incident SRE Agent (Google Cloud + Grafana Track)",
+  "scripts": {
+    "install:pipeline": "npm --prefix mock-pipeline install",
+    "install:dashboard": "npm --prefix dashboard install",
+    "start:pipeline": "node mock-pipeline/worker.js",
+    "start:dashboard": "npm --prefix dashboard run dev",
+    "test:pipeline": "npm --prefix mock-pipeline test"
+  },
+  "keywords": [
+    "sre-agent",
+    "video-transcoding",
+    "grafana-mcp",
+    "gemini",
+    "langgraph",
+    "autonomous-remediation"
+  ],
+  "author": "CutGuard AI Team",
+  "license": "Apache-2.0"
+}

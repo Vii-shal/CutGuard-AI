@@ -1,0 +1,16 @@
+{
+  "name": "cutguard-mock-pipeline",
+  "version": "1.0.0",
+  "description": "CutGuard AI - Mock FFmpeg Cloud Transcoding Worker Pipeline",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js",
+    "test": "jest worker.test.js --colors"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
