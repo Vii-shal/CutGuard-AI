@@ -136,7 +136,35 @@ function buildRCAReport(incidentId: string): EnterpriseRCAReport {
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/RCAReportResponse'
+ *               type: object
+ *               properties:
+ *                 incidentId:
+ *                   type: string
+ *                   example: INC-AUTO-4091
+ *                 severity:
+ *                   type: string
+ *                   example: CRITICAL
+ *                 mttr:
+ *                   type: string
+ *                   example: 38s
+ *                 affectedPipelineStage:
+ *                   type: string
+ *                   example: FFMPEG_ENCODE
+ *                 rootCause:
+ *                   type: string
+ *                   example: Fatal pixel format incompatibility between 10-bit source ingest and H.264 baseline encoder profile.
+ *                 affectedFile:
+ *                   type: string
+ *                   example: src/transcoder/ffmpegArgs.ts
+ *                 gitPatch:
+ *                   type: string
+ *                   example: "--- a/src/transcoder/ffmpegArgs.ts\n+++ b/src/transcoder/ffmpegArgs.ts"
+ *                 verificationStatus:
+ *                   type: string
+ *                   example: PASSED_IN_SANDBOX
+ *                 operatorSignOff:
+ *                   type: boolean
+ *                   example: true
  */
 rcaRouter.get('/enterprise/rca/:incidentId', (req: Request, res: Response) => {
   const { incidentId } = req.params;

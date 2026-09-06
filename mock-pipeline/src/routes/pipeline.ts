@@ -80,14 +80,65 @@ pipelineRouter.get('/health', (_req: Request, res: Response) => {
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/TranscodeRequest'
+ *             type: object
+ *             required:
+ *               - videoId
+ *               - resolution
+ *               - codec
+ *               - sourceUrl
+ *             properties:
+ *               videoId:
+ *                 type: string
+ *                 example: vid-cinema-94021
+ *                 description: Unique video asset identifier
+ *               resolution:
+ *                 type: string
+ *                 enum: [1080p, 4k, 720p, 480p]
+ *                 example: 1080p
+ *                 description: Target render resolution
+ *               codec:
+ *                 type: string
+ *                 enum: [h264, hevc, av1]
+ *                 example: h264
+ *                 description: Target video codec
+ *               sourceUrl:
+ *                 type: string
+ *                 example: gs://raw-cinema-assets/scene-04-take-02.mov
+ *                 description: Cloud storage input master media URI
+ *               pixelFormat:
+ *                 type: string
+ *                 enum: [yuv420p, yuv422p10le, yuv444p]
+ *                 example: yuv420p
+ *                 description: Pixel format and chroma profile
  *     responses:
  *       200:
  *         description: Transcode completed successfully
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/TranscodeResponse'
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: COMPLETED
+ *                 jobId:
+ *                   type: string
+ *                   example: job-84920
+ *                 videoId:
+ *                   type: string
+ *                   example: vid-cinema-94021
+ *                 resolution:
+ *                   type: string
+ *                   example: 1080p
+ *                 codec:
+ *                   type: string
+ *                   example: h264
+ *                 progress:
+ *                   type: integer
+ *                   example: 100
+ *                 outputManifestUrl:
+ *                   type: string
+ *                   example: https://storage.googleapis.com/cutguard-processed-stream/job-84920/master.m3u8
  *       500:
  *         description: Transcoder process crash (SIGSEGV or SIGABRT)
  */
@@ -235,7 +286,18 @@ pipelineRouter.get('/jobs', (_req: Request, res: Response) => {
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/LogsResponse'
+ *               type: object
+ *               properties:
+ *                 total:
+ *                   type: integer
+ *                   example: 50
+ *                 limit:
+ *                   type: integer
+ *                   example: 50
+ *                 logs:
+ *                   type: array
+ *                   items:
+ *                     type: object
  */
 pipelineRouter.get('/logs', (req: Request, res: Response) => {
   const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;

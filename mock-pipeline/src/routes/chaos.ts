@@ -53,7 +53,24 @@ export const chaosRouter = Router();
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/ChaosInjectRequest'
+ *             type: object
+ *             required:
+ *               - scenario
+ *             properties:
+ *               scenario:
+ *                 type: string
+ *                 enum: [UNSUPPORTED_PIXEL_FORMAT, FFMPEG_OOM, SEGMENT_CORRUPTION]
+ *                 example: UNSUPPORTED_PIXEL_FORMAT
+ *                 description: Simulated failure scenario to trigger in the video worker
+ *               targetWorker:
+ *                 type: string
+ *                 example: worker-transcode-04
+ *                 description: Identifier of the target transcoder pod
+ *               severity:
+ *                 type: string
+ *                 enum: [CRITICAL, HIGH, MEDIUM]
+ *                 example: CRITICAL
+ *                 description: Failure severity level classification
  *     responses:
  *       200:
  *         description: Chaos scenario successfully activated and telemetry emitted
@@ -69,7 +86,7 @@ export const chaosRouter = Router();
  *                   type: string
  *                   example: Chaos scenario 'UNSUPPORTED_PIXEL_FORMAT' triggered. Pipeline is now primed for autonomous triage.
  *                 activeIncident:
- *                   $ref: '#/components/schemas/ChaosInjectRequest'
+ *                   type: object
  *       400:
  *         description: Invalid or unsupported chaos scenario specified
  */
@@ -180,7 +197,23 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/ChaosResetResponse'
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: HEALTHY
+ *                 isCrashed:
+ *                   type: boolean
+ *                   example: false
+ *                 activeScenario:
+ *                   type: string
+ *                   example: NONE
+ *                 isFailureArmed:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: Pipeline restored to normal operating state.
  */
 chaosRouter.post('/reset', (_req: Request, res: Response) => {
   resetChaosState();
