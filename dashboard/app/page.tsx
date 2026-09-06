@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Header } from '../components/Header';
 import { IncidentFeed } from '../components/IncidentFeed';
 import { BlastRadiusRadar } from '../components/BlastRadiusRadar';
@@ -14,7 +14,6 @@ import {
   FileText, 
   CheckCircle2, 
   AlertCircle, 
-  Sparkles, 
   Play, 
   RefreshCw,
   Server,
@@ -22,238 +21,446 @@ import {
   ShieldCheck
 } from 'lucide-react';
 
+// ==========================================
+// CutGuard AI - Enterprise SRE Types
+// ==========================================
+
+export type IncidentStatus = 
+  | 'IDLE'
+  | 'INITIALIZING'
+  | 'ANALYZING'
+  | 'TRIAGING'
+  | 'TRIAGED'
+  | 'BLAST_ASSESSED'
+  | 'SANDBOXED'
+  | 'SANDBOX_TESTED'
+  | 'NEEDS_APPROVAL'
+  | 'WAITING_FOR_HUMAN'
+  | 'DEPLOYING'
+  | 'RESOLVED'
+  | 'ESCALATED'
+  | 'ERROR';
+
+export interface AffectedFile {
+  file: string;
+  lines_of_code: number;
+  symbols_imported: string[];
+}
+
+export interface BlastDetails {
+  blast_score?: number;
+  threat_level?: string;
+  culprit_file?: string;
+  downstream_dependent_count?: number;
+  affected_files?: AffectedFile[];
+  affected_symbols?: string[];
+  affected_endpoints?: string[];
+  blast_description?: string;
+  [key: string]: unknown;
+}
+
+export interface Incident {
+  incident_id: string;
+  service: string;
+  status: IncidentStatus;
+  raw_log: string;
+  culprit_file: string;
+  culprit_commit: string;
+  blast_score: number;
+  blast_details: BlastDetails;
+  generated_diff: string;
+  test_passed: boolean;
+  test_output: string;
+  retry_count: number;
+  human_approved: boolean | null;
+  post_mortem: string;
+  created_at: string;
+  interrupt_payload?: unknown;
+}
+
+export interface ChaosIncidentTelemetry {
+  incidentId?: string;
+  scenario?: string;
+  targetWorker?: string;
+  severity?: string;
+  errorSignature?: string;
+  timestamp?: string;
+  failingFile?: string;
+  affectedPipelineStage?: string;
+  exitCode?: number;
+  signal?: string;
+  status?: string;
+  rawStderr?: string;
+}
+
+export interface ChaosStatusResponse {
+  status: string;
+  isCrashed: boolean;
+  activeScenario: string | null;
+  isFailureArmed: boolean;
+  activeIncident: ChaosIncidentTelemetry | null;
+}
+
+export interface AgentLatestResponse {
+  incident: Incident | null;
+}
+
+// Controlled Polling Intervals
+const NOMINAL_POLL_INTERVAL_MS = 5000;
+const ACTIVE_POLL_INTERVAL_MS = 1200;
+
 export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
-  const [isProcessingApproval, setIsProcessingApproval] = useState(false);
-  const [isPostMortemOpen, setIsPostMortemOpen] = useState(false);
+  const [isProcessingApproval, setIsProcessingApproval] = useState<boolean>(false);
+  const [isPostMortemOpen, setIsPostMortemOpen] = useState<boolean>(false);
 
-  // Live Infrastructure Connectivity
+  // Live Infrastructure Connectivity Badges
   const [pipelineOnline, setPipelineOnline] = useState<boolean>(false);
   const [agentOnline, setAgentOnline] = useState<boolean>(false);
 
-  // Active Incident State
-  const [incident, setIncident] = useState({
-    incident_id: '',
-    service: 'ffmpeg-transcoder',
-    status: 'IDLE',
-    raw_log: '',
-    culprit_file: 'mock-pipeline/worker.js',
-    culprit_commit: '',
-    blast_score: 0,
-    blast_details: {} as any,
-    generated_diff: '',
-    test_passed: false,
-    test_output: '',
-    retry_count: 0,
-    human_approved: null as boolean | null,
-    post_mortem: '',
-    created_at: ''
-  });
+  // Active Incident State (null represents nominal IDLE monitoring)
+  const [incident, setIncident] = useState<Incident | null>(null);
 
-  // Periodic health check for :4001 (Worker) and :8000 (SRE Agent)
+  // Active state references for asynchronous callbacks to avoid stale closures
+  const incidentRef = useRef<Incident | null>(incident);
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isRequestInFlightRef = useRef<boolean>(false);
+
+  // Synchronize ref on every state change
   useEffect(() => {
-    const checkServices = async () => {
-      // Check Mock Pipeline (:4001)
-      try {
-        const res = await fetch('http://localhost:4001/health', { cache: 'no-store' });
-        setPipelineOnline(res.ok);
-      } catch {
-        setPipelineOnline(false);
-      }
+    incidentRef.current = incident;
+  }, [incident]);
 
-      // Check SRE Agent (:8000)
-      try {
-        const res = await fetch('http://localhost:8000/api/health', { cache: 'no-store' });
-        setAgentOnline(res.ok);
-      } catch {
-        setAgentOnline(false);
-      }
-    };
+  // Derived current status for UI rendering and state-machine gating
+  const activeStatus: IncidentStatus = incident?.status || 'IDLE';
 
-    checkServices();
-    const interval = setInterval(checkServices, 3000);
-    return () => clearInterval(interval);
+  // Controlled cleanup function to unconditionally halt all timers
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
   }, []);
 
-  // Requirement 3: Automatic passive poller checking SRE Agent & Mock Pipeline
-  // Autonomously detects incoming platform incidents without manual injection
+  // =========================================================================
+  // Requirement 1: Gated State-Machine Polling
+  // - Nominal / Idle: Slow baseline polling (5000ms) to detect new failures
+  // - Triaging / Active: Rapid polling (1200ms) to stream real-time AST/sandbox progress
+  // - HITL Gate (NEEDS_APPROVAL / WAITING_FOR_HUMAN): IMMEDIATELY CLEAR & STOP ALL TIMERS
+  // - Resolved / Escalated: Stop polling until user initiates action
+  // =========================================================================
   useEffect(() => {
+    clearPollTimer();
+
+    // Condition 1: HITL Gate -> Immediately halt all timers. Zero network requests during review.
+    if (activeStatus === 'NEEDS_APPROVAL' || activeStatus === 'WAITING_FOR_HUMAN') {
+      return;
+    }
+
+    // Condition 2: Terminal State -> Stop polling until explicit user action
+    if (activeStatus === 'RESOLVED' || activeStatus === 'ESCALATED' || activeStatus === 'ERROR') {
+      return;
+    }
+
+    // Condition 3: Active Investigation -> Rapid polling (1000-1500ms)
+    if (
+      activeStatus === 'INITIALIZING' ||
+      activeStatus === 'ANALYZING' ||
+      activeStatus === 'TRIAGING' ||
+      activeStatus === 'TRIAGED' ||
+      activeStatus === 'BLAST_ASSESSED' ||
+      activeStatus === 'SANDBOXED' ||
+      activeStatus === 'SANDBOX_TESTED' ||
+      activeStatus === 'DEPLOYING'
+    ) {
+      let isCancelled = false;
+
+      const pollActiveInvestigation = async () => {
+        if (isCancelled || isRequestInFlightRef.current) return;
+        isRequestInFlightRef.current = true;
+
+        try {
+          const currentInc = incidentRef.current;
+          const [agentRes, pipelineRes] = await Promise.allSettled([
+            fetch('http://localhost:8000/api/incident/latest', { cache: 'no-store' }),
+            fetch('http://localhost:4001/api/chaos/status', { cache: 'no-store' })
+          ]);
+
+          if (isCancelled) return;
+
+          let latestAgentInc: Incident | null = null;
+          if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
+            const data: AgentLatestResponse = await agentRes.value.json();
+            latestAgentInc = data.incident;
+          }
+
+          if (pipelineRes.status === 'fulfilled' && pipelineRes.value.ok) {
+            const chaosData: ChaosStatusResponse = await pipelineRes.value.json();
+            setPipelineOnline(!chaosData.isCrashed);
+          }
+
+          if (latestAgentInc && latestAgentInc.incident_id) {
+            if (!currentInc?.incident_id || latestAgentInc.incident_id === currentInc.incident_id) {
+              setIncident(prev => ({
+                ...(prev || latestAgentInc!),
+                ...latestAgentInc!,
+                blast_details: latestAgentInc!.blast_details || prev?.blast_details || {}
+              }));
+
+              // If the incident has reached HITL or finished, break out of loop
+              if (
+                latestAgentInc.status === 'NEEDS_APPROVAL' ||
+                latestAgentInc.status === 'WAITING_FOR_HUMAN' ||
+                latestAgentInc.status === 'RESOLVED' ||
+                latestAgentInc.status === 'ESCALATED'
+              ) {
+                return;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[Active Poll] Transient polling error:', err);
+        } finally {
+          isRequestInFlightRef.current = false;
+        }
+
+        if (!isCancelled) {
+          pollTimerRef.current = setTimeout(pollActiveInvestigation, ACTIVE_POLL_INTERVAL_MS);
+        }
+      };
+
+      pollTimerRef.current = setTimeout(pollActiveInvestigation, ACTIVE_POLL_INTERVAL_MS);
+
+      return () => {
+        isCancelled = true;
+        clearPollTimer();
+      };
+    }
+
+    // Condition 4: Nominal / Idle State -> Slow baseline polling (5000ms)
     let isCancelled = false;
 
-    const pollPassiveTelemetry = async () => {
+    const pollNominalTelemetry = async () => {
+      if (isCancelled || isRequestInFlightRef.current) return;
+      isRequestInFlightRef.current = true;
+
       try {
-        const [agentRes, pipelineRes] = await Promise.allSettled([
+        const [chaosRes, agentRes, pipeHealth, agentHealth] = await Promise.allSettled([
+          fetch('http://localhost:4001/api/chaos/status', { cache: 'no-store' }),
           fetch('http://localhost:8000/api/incident/latest', { cache: 'no-store' }),
-          fetch('http://localhost:4001/api/chaos/status', { cache: 'no-store' })
+          fetch('http://localhost:4001/health', { cache: 'no-store' }),
+          fetch('http://localhost:8000/api/health', { cache: 'no-store' })
         ]);
-
-        let latestAgentInc: any = null;
-        if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
-          const data = await agentRes.value.json();
-          latestAgentInc = data.incident;
-        }
-
-        let pipelineChaos: any = null;
-        if (pipelineRes.status === 'fulfilled' && pipelineRes.value.ok) {
-          pipelineChaos = await pipelineRes.value.json();
-        }
 
         if (isCancelled) return;
 
-        // CASE 1: SRE Agent has an active incident record
+        setPipelineOnline(pipeHealth.status === 'fulfilled' && pipeHealth.value.ok);
+        setAgentOnline(agentHealth.status === 'fulfilled' && agentHealth.value.ok);
+
+        let latestAgentInc: Incident | null = null;
+        if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
+          const data: AgentLatestResponse = await agentRes.value.json();
+          latestAgentInc = data.incident;
+        }
+
+        let pipelineChaos: ChaosStatusResponse | null = null;
+        if (chaosRes.status === 'fulfilled' && chaosRes.value.ok) {
+          pipelineChaos = await chaosRes.value.json();
+        }
+
+        // Case A: SRE Agent has an active incident record
         if (latestAgentInc && latestAgentInc.incident_id) {
-          // If dashboard is IDLE: only wake up if incoming incident is active (not resolved/escalated)
-          if (incident.status === 'IDLE') {
-            if (latestAgentInc.status !== 'RESOLVED' && latestAgentInc.status !== 'ESCALATED') {
-              setIncident({
-                ...latestAgentInc,
-                blast_details: latestAgentInc.blast_details || {}
-              });
-            }
-          } else if (incident.status !== 'RESOLVED' && incident.status !== 'ESCALATED') {
-            // Dashboard is already tracking active incident: update state
-            if (!incident.incident_id || latestAgentInc.incident_id === incident.incident_id) {
-              setIncident(prev => ({
-                ...prev,
-                ...latestAgentInc,
-                blast_details: latestAgentInc.blast_details || prev.blast_details
-              }));
-            }
+          if (latestAgentInc.status !== 'RESOLVED' && latestAgentInc.status !== 'ESCALATED') {
+            setIncident({
+              ...latestAgentInc,
+              blast_details: latestAgentInc.blast_details || {}
+            });
+            return; // State update triggers effect re-evaluation
           }
         } 
-        // CASE 2: Pipeline crashed on Port 4001 but agent incident record is still forming
+        // Case B: Pipeline crashed on Port 4001, ingest crash telemetry passively
         else if (pipelineChaos && pipelineChaos.isCrashed && pipelineChaos.activeIncident) {
-          if (incident.status === 'IDLE') {
-            setIncident({
-              incident_id: pipelineChaos.activeIncident.incidentId,
-              service: 'ffmpeg-transcoder',
-              status: 'ANALYZING',
-              raw_log: pipelineChaos.activeIncident.rawStderr || 'Pipeline crash detected on Port 4001. Ingesting crash telemetry...',
-              culprit_file: pipelineChaos.activeIncident.failingFile || 'mock-pipeline/worker.js',
-              culprit_commit: 'HEAD~1',
-              blast_score: 0,
-              blast_details: {},
-              generated_diff: '',
-              test_passed: false,
-              test_output: '',
-              retry_count: 0,
-              human_approved: null,
-              post_mortem: '',
-              created_at: pipelineChaos.activeIncident.timestamp || new Date().toISOString()
-            });
-          }
+          const inc = pipelineChaos.activeIncident;
+          setIncident({
+            incident_id: inc.incidentId || `inc-chaos-${Date.now()}`,
+            service: 'ffmpeg-transcoder',
+            status: 'ANALYZING',
+            raw_log: inc.rawStderr || inc.errorSignature || 'Pipeline crash detected on Port 4001. Ingesting telemetry...',
+            culprit_file: inc.failingFile || 'mock-pipeline/worker.js',
+            culprit_commit: 'HEAD~1',
+            blast_score: 0,
+            blast_details: {},
+            generated_diff: '',
+            test_passed: false,
+            test_output: '',
+            retry_count: 0,
+            human_approved: null,
+            post_mortem: '',
+            created_at: inc.timestamp || new Date().toISOString()
+          });
+          return; // State update triggers effect re-evaluation
         }
       } catch (err) {
-        // Services may be starting or network idle
+        console.warn('[Nominal Poll] Transient nominal check error:', err);
+      } finally {
+        isRequestInFlightRef.current = false;
+      }
+
+      if (!isCancelled) {
+        pollTimerRef.current = setTimeout(pollNominalTelemetry, NOMINAL_POLL_INTERVAL_MS);
       }
     };
 
-    const interval = setInterval(pollPassiveTelemetry, 1000);
-    pollPassiveTelemetry();
+    // Run immediate check upon entering nominal state, then schedule next
+    pollNominalTelemetry();
 
     return () => {
       isCancelled = true;
-      clearInterval(interval);
+      clearPollTimer();
     };
-  }, [incident.incident_id, incident.status]);
+  }, [activeStatus, clearPollTimer]);
 
-  // Reset console to nominal monitoring state
-  const handleResetToNominal = async () => {
-    try {
-      await fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' });
-      await fetch('http://localhost:8000/api/incidents/clear', { method: 'POST' });
-    } catch (err) {
-      console.warn('Nominal reset notice:', err);
-    }
-    setIncident({
-      incident_id: '',
-      service: 'ffmpeg-transcoder',
-      status: 'IDLE',
-      raw_log: '',
-      culprit_file: 'mock-pipeline/worker.js',
-      culprit_commit: '',
-      blast_score: 0,
-      blast_details: {} as any,
-      generated_diff: '',
-      test_passed: false,
-      test_output: '',
-      retry_count: 0,
-      human_approved: null,
-      post_mortem: '',
-      created_at: ''
-    });
-  };
-
-  // Human-in-the-loop: Approve & Deploy Fix
+  // =========================================================================
+  // Requirement 2: Synchronized "Approve & Deploy Fix" Action Handler
+  // 1. Dispatch approval to SRE Agent: POST http://localhost:8000/api/incident/:id/resume with { "action": "approve" }
+  // 2. Apply hot-patch to mock-pipeline: POST http://localhost:4001/api/patch/apply with { "patch": incident.generated_diff, "incidentId": incident.incident_id }
+  // 3. Clear fault state: POST http://localhost:4001/api/chaos/reset
+  // 4. Run a single synchronized fetch against both ports to update all UI badges to operational before settling
+  // =========================================================================
   const handleApprove = async () => {
+    const currentInc = incidentRef.current;
+    if (!currentInc || !currentInc.incident_id) return;
+
     setIsProcessingApproval(true);
     try {
-      // 1. Resume LangGraph workflow via FastAPI Agent with action: 'approve'
+      // 1. Dispatch approval to SRE Agent
       try {
-        await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/resume`, {
+        await fetch(`http://localhost:8000/api/incident/${currentInc.incident_id}/resume`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ approved: true, action: 'approve', approver: 'Lead Cinema SRE' })
+          body: JSON.stringify({
+            action: 'approve',
+            approved: true,
+            approver: 'Lead Cinema SRE'
+          })
         });
       } catch (err) {
-        console.warn('SRE agent resume notice:', err);
+        console.warn('[Approval] SRE Agent resume error:', err);
       }
 
-      // 2. Synchronize directly with mock-pipeline on port 4001 (apply patch & reset failure state)
+      // 2. Apply hot-patch to mock-pipeline
       try {
-        if (incident.generated_diff) {
+        if (currentInc.generated_diff) {
           await fetch('http://localhost:4001/api/patch/apply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              patch: incident.generated_diff,
-              incidentId: incident.incident_id,
+              patch: currentInc.generated_diff,
+              incidentId: currentInc.incident_id,
               operatorSignOff: true
             })
           });
         }
+      } catch (err) {
+        console.warn('[Approval] Pipeline patch application error:', err);
+      }
+
+      // 3. Clear fault state
+      try {
         await fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' });
       } catch (err) {
-        console.warn('Pipeline direct synchronization notice:', err);
+        console.warn('[Approval] Chaos reset error:', err);
       }
 
-      // 3. Obtain Enterprise RCA report if not yet populated
-      let rcaReport = incident.post_mortem;
-      if (!rcaReport) {
-        try {
-          const rcaRes = await fetch(`http://localhost:4001/api/enterprise/rca/${incident.incident_id}`);
-          if (rcaRes.ok) {
-            const rcaData = await rcaRes.json();
-            rcaReport = `# Enterprise Incident RCA & Post-Mortem\n**Incident ID:** \`${rcaData.incidentId}\`\n**Severity:** \`${rcaData.severity}\`\n**MTTR:** \`${rcaData.mttr}\`\n**Status:** **${rcaData.verificationStatus}**\n\n### Root Cause Analysis\n${rcaData.rootCauseAnalysis?.summary}\n\n**Trigger Mechanism:**\n${rcaData.rootCauseAnalysis?.triggerMechanism}\n\n### Applied Code Patch\n\`\`\`diff\n${rcaData.appliedPatch}\n\`\`\``;
-          }
-        } catch {
-          // Keep existing or default post-mortem
+      // 4. Single synchronized fetch against both ports to update UI badges to operational
+      let rcaReport = currentInc.post_mortem;
+      try {
+        const [pipeHealth, agentHealth, rcaRes] = await Promise.allSettled([
+          fetch('http://localhost:4001/health', { cache: 'no-store' }),
+          fetch('http://localhost:8000/api/health', { cache: 'no-store' }),
+          fetch(`http://localhost:4001/api/enterprise/rca/${currentInc.incident_id}`, { cache: 'no-store' })
+        ]);
+
+        setPipelineOnline(pipeHealth.status === 'fulfilled' && pipeHealth.value.ok);
+        setAgentOnline(agentHealth.status === 'fulfilled' && agentHealth.value.ok);
+
+        if (rcaRes.status === 'fulfilled' && rcaRes.value.ok) {
+          const rcaData = await rcaRes.value.json();
+          rcaReport = `# Enterprise Incident RCA & Post-Mortem\n**Incident ID:** \`${rcaData.incidentId}\`\n**Severity:** \`${rcaData.severity}\`\n**MTTR:** \`${rcaData.mttr}\`\n**Status:** **${rcaData.verificationStatus}**\n\n### Root Cause Analysis\n${rcaData.rootCauseAnalysis?.summary || 'Automated AST patch verified and hot-reloaded.'}\n\n**Trigger Mechanism:**\n${rcaData.rootCauseAnalysis?.triggerMechanism || 'Codec parameter mismatch in FFmpeg chunk encoder.'}\n\n### Applied Code Patch\n\`\`\`diff\n${rcaData.appliedPatch || currentInc.generated_diff}\n\`\`\``;
         }
+      } catch (err) {
+        console.warn('[Approval] Synchronized verification error:', err);
       }
 
-      setIncident(prev => ({
+      // Settle UI state into RESOLVED
+      setIncident(prev => prev ? ({
         ...prev,
         status: 'RESOLVED',
         human_approved: true,
         post_mortem: rcaReport || prev.post_mortem
-      }));
+      }) : null);
+
     } finally {
       setIsProcessingApproval(false);
     }
   };
 
+  // =========================================================================
+  // Requirement 3: Coordinated "Reset to Nominal" Handler
+  // - Clear chaos on Port 4001 (POST /api/chaos/reset)
+  // - Clear incident records on Port 8000 (POST /api/incidents/clear)
+  // - Reset incident state to null in React
+  // - Resumes the slow baseline poll (every 5000ms) to show green "ALL SYSTEMS NOMINAL"
+  // =========================================================================
+  const handleResetToNominal = async () => {
+    // 1. Clear chaos on Port 4001 and incidents on Port 8000
+    try {
+      await Promise.allSettled([
+        fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' }),
+        fetch('http://localhost:8000/api/incidents/clear', { method: 'POST' })
+      ]);
+    } catch (err) {
+      console.warn('[Reset] Coordinated reset error:', err);
+    }
+
+    // 2. Refresh infrastructure health status
+    try {
+      const [pipeHealth, agentHealth] = await Promise.allSettled([
+        fetch('http://localhost:4001/health', { cache: 'no-store' }),
+        fetch('http://localhost:8000/api/health', { cache: 'no-store' })
+      ]);
+      setPipelineOnline(pipeHealth.status === 'fulfilled' && pipeHealth.value.ok);
+      setAgentOnline(agentHealth.status === 'fulfilled' && agentHealth.value.ok);
+    } catch {
+      // Maintain previous status
+    }
+
+    // 3. Reset incident state to null in React
+    // This transitions activeStatus to 'IDLE', which automatically triggers
+    // the slow baseline poll (every 5000ms) and displays the clean green nominal dashboard.
+    setIncident(null);
+  };
+
   // Human-in-the-loop: Reject & Rollback
   const handleReject = async () => {
+    const currentInc = incidentRef.current;
+    if (!currentInc || !currentInc.incident_id) return;
+
     setIsProcessingApproval(true);
     try {
-      await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/resume`, {
+      await fetch(`http://localhost:8000/api/incident/${currentInc.incident_id}/resume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved: false, action: 'reject', approver: 'Lead Cinema SRE' })
+        body: JSON.stringify({ 
+          action: 'reject',
+          approved: false, 
+          approver: 'Lead Cinema SRE' 
+        })
       });
-      setIncident(prev => ({ ...prev, status: 'ESCALATED', human_approved: false }));
-    } catch (e) {
-      setIncident(prev => ({ ...prev, status: 'ESCALATED', human_approved: false }));
+      setIncident(prev => prev ? ({ ...prev, status: 'ESCALATED', human_approved: false }) : null);
+    } catch (err) {
+      console.warn('[Reject] Reject notification error:', err);
+      setIncident(prev => prev ? ({ ...prev, status: 'ESCALATED', human_approved: false }) : null);
     } finally {
       setIsProcessingApproval(false);
     }
@@ -264,7 +471,7 @@ export default function IncidentControlCenter() {
       
       {/* Top Navbar */}
       <Header
-        activeStatus={incident.status}
+        activeStatus={activeStatus}
         pipelineOnline={pipelineOnline}
         agentOnline={agentOnline}
       />
@@ -274,27 +481,27 @@ export default function IncidentControlCenter() {
         
         {/* Incident Lifecycle Header & Progress Stepper */}
         <IncidentFeed
-          incidentId={incident.incident_id}
-          status={incident.status}
-          service={incident.service}
-          rawLog={incident.raw_log}
-          createdAt={incident.created_at}
-          culpritFile={incident.culprit_file}
-          blastScore={incident.blast_score}
+          incidentId={incident?.incident_id || ''}
+          status={activeStatus}
+          service={incident?.service || 'ffmpeg-transcoder'}
+          rawLog={incident?.raw_log || ''}
+          createdAt={incident?.created_at || ''}
+          culpritFile={incident?.culprit_file || 'mock-pipeline/worker.js'}
+          blastScore={incident?.blast_score || 0}
         />
 
         {/* Human-in-the-Loop Approval Decision Bar */}
         <HumanApprovalBar
-          incidentId={incident.incident_id}
-          status={incident.status}
+          incidentId={incident?.incident_id || ''}
+          status={activeStatus}
           onApprove={handleApprove}
           onReject={handleReject}
           isProcessing={isProcessingApproval}
-          blastScore={incident.blast_score}
+          blastScore={incident?.blast_score || 0}
         />
 
         {/* Resolved Banner Action */}
-        {incident.status === 'RESOLVED' && (
+        {activeStatus === 'RESOLVED' && (
           <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
@@ -327,7 +534,7 @@ export default function IncidentControlCenter() {
         )}
 
         {/* Escalated Banner Action */}
-        {incident.status === 'ESCALATED' && (
+        {activeStatus === 'ESCALATED' && (
           <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <AlertCircle className="w-5 h-5 text-rose-400" />
@@ -351,7 +558,7 @@ export default function IncidentControlCenter() {
         )}
 
         {/* Clean Green "ALL SYSTEMS NOMINAL" Cluster Overview (when IDLE) OR Dual Grid (when Active/Remediating) */}
-        {incident.status === 'IDLE' ? (
+        {activeStatus === 'IDLE' ? (
           <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-8 shadow-2xl relative overflow-hidden backdrop-blur-md">
             <div className="absolute -top-24 -right-24 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
             
@@ -491,10 +698,10 @@ export default function IncidentControlCenter() {
             <div className="mt-4 p-4 rounded-lg bg-slate-950/80 border border-slate-800 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono text-slate-400 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   Loki Telemetry Passive Scan Stream
                 </span>
-                <span className="text-[10px] font-mono text-slate-500">Live Polling • 1,000ms</span>
+                <span className="text-[10px] font-mono text-slate-500">Baseline Cadence • 5,000ms</span>
               </div>
               <div className="font-mono text-[11px] text-slate-400 space-y-1 leading-relaxed bg-black/40 p-3 rounded border border-slate-900">
                 <div className="text-emerald-400/90">[PASSIVE OBSERVER] Ingestion listener connected. Loki query: &#123;app=&quot;ffmpeg-transcoder&quot;&#125; |= &quot;CRITICAL&quot;</div>
@@ -511,8 +718,8 @@ export default function IncidentControlCenter() {
             {/* Left Column: Blast Radius Analysis (4 Cols) */}
             <div className="lg:col-span-4 space-y-6">
               <BlastRadiusRadar
-                score={incident.blast_score}
-                details={incident.blast_details}
+                score={incident?.blast_score || 0}
+                details={(incident?.blast_details || {}) as any}
               />
 
               {/* Live Dynamic SRE Telemetry Stats Card */}
@@ -527,19 +734,15 @@ export default function IncidentControlCenter() {
                 <div className="space-y-2 font-mono text-slate-400">
                   <div className="flex justify-between">
                     <span>Worker Pod:</span>
-                    <span className="text-slate-200 truncate">
-                      {incident.status === 'IDLE' ? 'transcode-pool-idle' : 'transcode-worker-7f89b'}
-                    </span>
+                    <span className="text-slate-200 truncate">transcode-worker-7f89b</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Exit Signal:</span>
-                    {incident.status === 'IDLE' ? (
-                      <span className="text-emerald-400 font-semibold">None (Nominal)</span>
-                    ) : incident.status === 'RESOLVED' ? (
+                    {activeStatus === 'RESOLVED' ? (
                       <span className="text-emerald-400 font-semibold">Recovered (Exit 0)</span>
-                    ) : (incident.raw_log.includes('139') || incident.raw_log.includes('SIGSEGV')) ? (
+                    ) : (incident?.raw_log?.includes('139') || incident?.raw_log?.includes('SIGSEGV')) ? (
                       <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
-                    ) : (incident.raw_log.includes('137') || incident.raw_log.includes('SIGABRT')) ? (
+                    ) : (incident?.raw_log?.includes('137') || incident?.raw_log?.includes('SIGABRT')) ? (
                       <span className="text-rose-400 font-semibold">SIGABRT (Exit 137 OOM)</span>
                     ) : (
                       <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
@@ -547,12 +750,10 @@ export default function IncidentControlCenter() {
                   </div>
                   <div className="flex justify-between">
                     <span>Self-Healing Loop:</span>
-                    {incident.status === 'IDLE' ? (
-                      <span className="text-slate-500">Standby (0 active)</span>
-                    ) : incident.status === 'RESOLVED' ? (
+                    {activeStatus === 'RESOLVED' ? (
                       <span className="text-emerald-400 font-semibold">1 / 1 Remediated &amp; Verified</span>
                     ) : (
-                      <span className="text-cyan-400 font-semibold">{incident.retry_count} / 2 Retries</span>
+                      <span className="text-cyan-400 font-semibold">{incident?.retry_count || 0} / 2 Retries</span>
                     )}
                   </div>
                   <div className="flex justify-between">
@@ -590,14 +791,14 @@ export default function IncidentControlCenter() {
                     }`}
                   >
                     <span>Sandbox Jest Test Output</span>
-                    {incident.test_passed && (
+                    {incident?.test_passed && (
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     )}
                   </button>
                 </div>
 
                 <div className="text-[11px] text-slate-500 font-mono">
-                  Target: {incident.culprit_file || 'mock-pipeline/worker.js'}
+                  Target: {incident?.culprit_file || 'mock-pipeline/worker.js'}
                 </div>
               </div>
 
@@ -605,16 +806,16 @@ export default function IncidentControlCenter() {
               <div className="flex-1">
                 {activeTab === 'diff' ? (
                   <DiffViewer
-                    diff={incident.generated_diff}
-                    culpritFile={incident.culprit_file}
-                    testPassed={incident.test_passed}
+                    diff={incident?.generated_diff || ''}
+                    culpritFile={incident?.culprit_file || 'mock-pipeline/worker.js'}
+                    testPassed={incident?.test_passed || false}
                   />
                 ) : (
                   <SandboxLogs
-                    logs={incident.test_output}
-                    testPassed={incident.test_passed}
-                    retryCount={incident.retry_count}
-                    status={incident.status}
+                    logs={incident?.test_output || ''}
+                    testPassed={incident?.test_passed || false}
+                    retryCount={incident?.retry_count || 0}
+                    status={activeStatus}
                   />
                 )}
               </div>
@@ -630,8 +831,8 @@ export default function IncidentControlCenter() {
       <PostMortemModal
         isOpen={isPostMortemOpen}
         onClose={() => setIsPostMortemOpen(false)}
-        postMortem={incident.post_mortem}
-        incidentId={incident.incident_id}
+        postMortem={incident?.post_mortem || ''}
+        incidentId={incident?.incident_id || ''}
       />
 
       {/* Global Ops Footer */}
