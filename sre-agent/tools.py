@@ -160,6 +160,8 @@ def run_isolated_sandbox_test(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=40,
             shell=(sys.platform == "win32")
         )
@@ -227,6 +229,8 @@ def apply_unified_diff(diff_text: str, repo_root: Optional[str] = None) -> bool:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             shell=(sys.platform == "win32")
         )
 
@@ -360,23 +364,25 @@ def commit_and_tag_fix(
 
     try:
         # Check if git initialized
-        check = subprocess.run(["git", "status"], cwd=repo_root, capture_output=True, text=True, shell=(sys.platform == "win32"))
+        check = subprocess.run(["git", "status"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
         if check.returncode != 0:
-            subprocess.run(["git", "init"], cwd=repo_root, capture_output=True, text=True, shell=(sys.platform == "win32"))
+            subprocess.run(["git", "init"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
             subprocess.run(["git", "config", "user.name", "CutGuard SRE Bot"], cwd=repo_root, shell=(sys.platform == "win32"))
             subprocess.run(["git", "config", "user.email", "cutguard-sre@googlecloud.hackathon"], cwd=repo_root, shell=(sys.platform == "win32"))
 
-        subprocess.run(["git", "add", "mock-pipeline/worker.js"], cwd=repo_root, capture_output=True, text=True, shell=(sys.platform == "win32"))
+        subprocess.run(["git", "add", "mock-pipeline/worker.js"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
         commit_res = subprocess.run(
             ["git", "commit", "-m", commit_msg],
             cwd=repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             shell=(sys.platform == "win32")
         )
 
         # Get commit SHA
-        sha_res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, capture_output=True, text=True, shell=(sys.platform == "win32"))
+        sha_res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
         sha = sha_res.stdout.strip() if sha_res.returncode == 0 else "a9f82d1"
 
         if tag_name:

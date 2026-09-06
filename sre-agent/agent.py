@@ -192,7 +192,11 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
         generated_diff = (
             f"--- a/{culprit_file}\n"
             f"+++ b/{culprit_file}\n"
-            f"@@ -32,7 +32,9 @@ function processVideoChunk(chunk) {{\n"
+            f"@@ -30,12 +30,8 @@ function processVideoChunk(chunk) {{\n"
+            f"   const duration = chunk.videoLengthSec || 10;\n"
+            f" \n"
+            f"-  // CRITICAL FAILURE POINT:\n"
+            f"-  // In production, when client manifests omit bitrateProfile, this throws SIGABRT OOM\n"
             f"-  if (!chunk.bitrateProfile) {{\n"
             f"-    throw new Error(\"CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)\");\n"
             f"-  }}\n"
@@ -202,7 +206,9 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             f"+  // Fallback to 720p_auto profile when bitrateProfile is omitted\n"
             f"+  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || {{ targetBitrate: '4500k', resolution: '1280x720' }};\n"
             f"+  const targetBitrate = profile.targetBitrate;\n"
-            f"+  const resolution = profile.resolution || '1280x720';"
+            f"+  const resolution = profile.resolution || '1280x720';\n"
+            f" \n"
+            f"   return {{"
         )
 
     # Run Jest in isolated sandbox with the proposed patch

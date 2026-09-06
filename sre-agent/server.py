@@ -81,8 +81,8 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
         async for chunk in cutguard_agent.astream(initial_state, config=config):
             for node_name, node_output in chunk.items():
                 print(f"[Stream][{incident_id}] Node completed: {node_name}")
-                # Merge node output into DB
-                INCIDENTS_DB[incident_id].update(node_output)
+                if isinstance(node_output, dict):
+                    INCIDENTS_DB[incident_id].update(node_output)
                 if node_name == "triage":
                     INCIDENTS_DB[incident_id]["status"] = "TRIAGED"
                 elif node_name == "blast_radius":
@@ -93,6 +93,8 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
                     INCIDENTS_DB[incident_id]["status"] = "RESOLVED"
                 elif node_name == "escalate":
                     INCIDENTS_DB[incident_id]["status"] = "ESCALATED"
+                elif node_name == "__interrupt__":
+                    INCIDENTS_DB[incident_id]["status"] = "NEEDS_APPROVAL"
 
                 await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
@@ -203,7 +205,8 @@ async def resume_incident(incident_id: str, req: ResumeRequest, background_tasks
         async for chunk in cutguard_agent.astream(command, config=config):
             for node_name, node_output in chunk.items():
                 print(f"[Resume Stream][{incident_id}] Node completed: {node_name}")
-                INCIDENTS_DB[incident_id].update(node_output)
+                if isinstance(node_output, dict):
+                    INCIDENTS_DB[incident_id].update(node_output)
                 if node_name == "deploy":
                     INCIDENTS_DB[incident_id]["status"] = "RESOLVED"
                 elif node_name == "escalate":
