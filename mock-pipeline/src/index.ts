@@ -4,6 +4,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import path from 'path';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
@@ -41,7 +42,13 @@ const swaggerOptions: swaggerJsdoc.Options = {
       }
     ]
   },
-  apis: ['./src/routes/*.ts', './dist/routes/*.js']
+  apis: [
+    path.join(__dirname, 'routes', '*.ts'),
+    path.join(__dirname, 'routes', '*.js'),
+    path.join(__dirname, '..', 'src', 'routes', '*.ts'),
+    './src/routes/*.ts',
+    './dist/routes/*.js'
+  ]
 };
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);

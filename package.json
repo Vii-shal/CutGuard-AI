@@ -5,9 +5,14 @@
   "scripts": {
     "install:pipeline": "npm --prefix mock-pipeline install",
     "install:dashboard": "npm --prefix dashboard install",
-    "start:pipeline": "node mock-pipeline/worker.js",
+    "start:pipeline": "npm --prefix mock-pipeline run dev",
+    "start:pipeline:dist": "npm --prefix mock-pipeline run start",
     "start:dashboard": "npm --prefix dashboard run dev",
-    "test:pipeline": "npm --prefix mock-pipeline test"
+    "build:pipeline": "npm --prefix mock-pipeline run build",
+    "build:dashboard": "npm --prefix dashboard run build",
+    "test:pipeline": "npm --prefix mock-pipeline test",
+    "test:transcoder": "npm --prefix mock-pipeline run test:transcoder",
+    "test:agent": "cd sre-agent && .\\.venv\\Scripts\\python.exe test_e2e.py"
   },
   "keywords": [
     "sre-agent",

@@ -196,6 +196,8 @@ rcaRouter.post('/patch/apply', (req: Request, res: Response) => {
 
   return res.json({
     status: 'PATCH_APPLIED',
+    pipelineStatus: 'HEALTHY',
+    isCrashed: false,
     message: 'Patch applied cleanly. Sandbox test assertions verified (100% passed).',
     verificationStatus: 'PASSED_IN_SANDBOX',
     operatorSignOff: existing.operatorSignOff,

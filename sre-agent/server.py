@@ -50,7 +50,8 @@ class TriggerRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    approved: bool
+    approved: Optional[bool] = None
+    action: Optional[str] = None
     approver: Optional[str] = "Lead SRE Engineer"
     notes: Optional[str] = "Approved automated 720p_auto fallback patch."
 
@@ -188,18 +189,20 @@ async def resume_incident(incident_id: str, req: ResumeRequest, background_tasks
     config = {"configurable": {"thread_id": incident_id}}
     graph_state = cutguard_agent.get_state(config)
 
+    is_approved = req.approved if req.approved is not None else (str(req.action).lower() == "approve")
+
     if not graph_state.tasks or not any(t.interrupts for t in graph_state.tasks):
         # Even if not paused in state, update record directly
-        INCIDENTS_DB[incident_id]["human_approved"] = req.approved
-        INCIDENTS_DB[incident_id]["status"] = "RESOLVED" if req.approved else "ESCALATED"
+        INCIDENTS_DB[incident_id]["human_approved"] = is_approved
+        INCIDENTS_DB[incident_id]["status"] = "RESOLVED" if is_approved else "ESCALATED"
         await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
         return INCIDENTS_DB[incident_id]
 
     async def _resume():
-        INCIDENTS_DB[incident_id]["status"] = "DEPLOYING" if req.approved else "REJECTING"
+        INCIDENTS_DB[incident_id]["status"] = "DEPLOYING" if is_approved else "REJECTING"
         await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
-        resume_payload = {"approved": req.approved, "approver": req.approver}
+        resume_payload = {"approved": is_approved, "action": "approve" if is_approved else "reject", "approver": req.approver}
         command = Command(resume=resume_payload)
 
         async for chunk in cutguard_agent.astream(command, config=config):
@@ -219,7 +222,7 @@ async def resume_incident(incident_id: str, req: ResumeRequest, background_tasks
         "success": True,
         "incident_id": incident_id,
         "message": "Human approval token processed. Resuming deployment graph.",
-        "approved": req.approved
+        "approved": is_approved
     }
 
 

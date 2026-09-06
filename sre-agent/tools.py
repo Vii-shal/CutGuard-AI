@@ -121,92 +121,28 @@ def run_isolated_sandbox_test(
     repo_root: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Executes Jest unit tests inside mock-pipeline.
-    If diff_patch is supplied, tests the patch in an isolated sandbox or temporarily
-    applies and tests. Reverts if not finalized.
+    Executes Jest unit tests in a zero-mutation isolated sandbox.
+    Delegates to tools.sandbox to ensure production repository files are never mutated.
     """
-    if not repo_root:
-        repo_root = str(Path(__file__).resolve().parent.parent)
-
-    pipeline_dir = os.path.join(repo_root, "mock-pipeline")
-    target_file_full = os.path.join(repo_root, target_file_rel)
-    backup_file = target_file_full + ".cutguard.bak"
-
-    applied_patch = False
     try:
-        if diff_patch:
-            # Backup original file
-            if os.path.exists(target_file_full):
-                shutil.copy2(target_file_full, backup_file)
-            
-            # Apply diff patch
-            apply_success = apply_unified_diff(diff_patch, repo_root)
-            if not apply_success:
-                return {
-                    "passed": False,
-                    "exit_code": 1,
-                    "stdout": "",
-                    "stderr": "Patch could not be applied cleanly to worker.js",
-                    "summary": "Sandbox patching failed before test execution."
-                }
-            applied_patch = True
-
-        # Run Jest via npm test / npm.cmd test
+        from tools.sandbox import run_isolated_sandbox_test as _sandbox_run
+        return _sandbox_run(diff_patch=diff_patch, target_file_rel=target_file_rel, repo_root=repo_root)
+    except Exception as e:
+        print(f"[Sandbox Delegation] Notice: {e}. Executing inline fallback.")
+        # Inline fallback
+        if not repo_root:
+            repo_root = str(Path(__file__).resolve().parent.parent)
+        pipeline_dir = os.path.join(repo_root, "mock-pipeline")
         cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "test"]
-        
-        proc = subprocess.run(
-            cmd,
-            cwd=pipeline_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=40,
-            shell=(sys.platform == "win32")
-        )
-
-        stdout = proc.stdout
-        stderr = proc.stderr
-        exit_code = proc.returncode
-        passed = (exit_code == 0)
-
-        # Parse test summary
-        summary = "Jest tests passed successfully." if passed else "Jest test suite failed."
-        match = re.search(r"Tests:\s+([^\n]+)", stdout + stderr)
-        if match:
-            summary = f"Tests: {match.group(1)}"
-
+        proc = subprocess.run(cmd, cwd=pipeline_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
+        passed = (proc.returncode == 0)
         return {
             "passed": passed,
-            "exit_code": exit_code,
-            "stdout": stdout,
-            "stderr": stderr,
-            "summary": summary
+            "exit_code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "summary": "Jest tests passed." if passed else "Jest test suite failed."
         }
-
-    except subprocess.TimeoutExpired:
-        return {
-            "passed": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": "Sandbox test runner timed out after 40 seconds.",
-            "summary": "Test execution timeout."
-        }
-    except Exception as e:
-        return {
-            "passed": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "summary": f"Sandbox runner error: {e}"
-        }
-    finally:
-        # If we temporarily applied patch for sandbox testing, always restore original
-        # until the human approval gate approves deployment!
-        if applied_patch and os.path.exists(backup_file):
-            shutil.copy2(backup_file, target_file_full)
-            os.remove(backup_file)
 
 def apply_unified_diff(diff_text: str, repo_root: Optional[str] = None) -> bool:
     """

@@ -166,7 +166,10 @@ chaosRouter.post('/reset', (_req: Request, res: Response) => {
 
   return res.json({
     status: 'HEALTHY',
+    isCrashed: false,
     activeScenario: 'NONE',
+    isFailureArmed: false,
+    activeIncident: null,
     message: 'Pipeline restored to normal operating state.'
   });
 });
@@ -182,9 +185,12 @@ chaosRouter.post('/reset', (_req: Request, res: Response) => {
  *         description: Current chaos state
  */
 chaosRouter.get('/status', (_req: Request, res: Response) => {
+  const isCrashed = activeScenario !== 'NONE' && activeIncident !== null;
   return res.json({
+    status: isCrashed ? 'CRASHED' : 'HEALTHY',
+    isCrashed,
     activeScenario,
-    isFailureArmed: activeScenario !== 'NONE',
+    isFailureArmed: isCrashed,
     activeIncident
   });
 });
