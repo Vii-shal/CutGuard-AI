@@ -8,6 +8,7 @@
     "start:pipeline": "npm --prefix mock-pipeline run dev",
     "start:pipeline:dist": "npm --prefix mock-pipeline run start",
     "start:dashboard": "npm --prefix dashboard run dev",
+    "start:agent": "cd sre-agent && .\\.venv\\Scripts\\python.exe server.py",
     "build:pipeline": "npm --prefix mock-pipeline run build",
     "build:dashboard": "npm --prefix dashboard run build",
     "test:pipeline": "npm --prefix mock-pipeline test",
