@@ -18,7 +18,8 @@ import {
   Play, 
   RefreshCw,
   Server,
-  Layers
+  Layers,
+  ShieldCheck
 } from 'lucide-react';
 
 export default function IncidentControlCenter() {
@@ -112,6 +113,32 @@ export default function IncidentControlCenter() {
     };
   }, [incident.incident_id, incident.status]);
 
+  // Reset console to nominal idle state
+  const handleResetToNominal = async () => {
+    try {
+      await fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' });
+    } catch (err) {
+      console.warn('Chaos reset notice:', err);
+    }
+    setIncident({
+      incident_id: '',
+      service: 'ffmpeg-transcoder',
+      status: 'IDLE',
+      raw_log: '',
+      culprit_file: 'mock-pipeline/worker.js',
+      culprit_commit: '',
+      blast_score: 0,
+      blast_details: {} as any,
+      generated_diff: '',
+      test_passed: false,
+      test_output: '',
+      retry_count: 0,
+      human_approved: null,
+      post_mortem: '',
+      created_at: ''
+    });
+  };
+
   // Trigger Crash & Agent Remediation Cycle
   const handleSimulateCrash = async (scenario: string = selectedScenario) => {
     setIsSimulating(true);
@@ -186,12 +213,12 @@ export default function IncidentControlCenter() {
   const handleApprove = async () => {
     setIsProcessingApproval(true);
     try {
-      // 1. Resume LangGraph workflow via FastAPI Agent
+      // 1. Resume LangGraph workflow via FastAPI Agent with action: 'approve'
       try {
         await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/resume`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ approved: true, approver: 'Lead Cinema SRE' })
+          body: JSON.stringify({ approved: true, action: 'approve', approver: 'Lead Cinema SRE' })
         });
       } catch (err) {
         console.warn('SRE agent resume notice:', err);
@@ -247,7 +274,7 @@ export default function IncidentControlCenter() {
       await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/resume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved: false, approver: 'Lead Cinema SRE' })
+        body: JSON.stringify({ approved: false, action: 'reject', approver: 'Lead Cinema SRE' })
       });
       setIncident(prev => ({ ...prev, status: 'ESCALATED', human_approved: false }));
     } catch (e) {
@@ -309,133 +336,274 @@ export default function IncidentControlCenter() {
                 </p>
               </div>
             </div>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => setIsPostMortemOpen(true)}
+                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-lg shadow-emerald-600/20"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>View Enterprise RCA Post-Mortem</span>
+              </button>
+              <button
+                onClick={handleResetToNominal}
+                className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset to Nominal</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Escalated Banner Action */}
+        {incident.status === 'ESCALATED' && (
+          <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <AlertCircle className="w-5 h-5 text-rose-400" />
+              <div>
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Incident Escalated
+                </span>
+                <p className="text-xs text-slate-300">
+                  Automated self-healing exceeded maximum retry budget or was rejected by operator. Manual SRE intervention required.
+                </p>
+              </div>
+            </div>
             <button
-              onClick={() => setIsPostMortemOpen(true)}
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-lg shadow-emerald-600/20"
+              onClick={handleResetToNominal}
+              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700"
             >
-              <FileText className="w-3.5 h-3.5" />
-              <span>View Enterprise RCA Post-Mortem</span>
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Reset to Nominal</span>
             </button>
           </div>
         )}
 
-        {/* Dual Grid: Blast Radius Left + Code Diff / Test Logs Right */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          
-          {/* Left Column: Blast Radius Analysis (4 Cols) */}
-          <div className="lg:col-span-4 space-y-6">
-            <BlastRadiusRadar
-              score={incident.blast_score}
-              details={incident.blast_details}
-            />
-
-            {/* Live Dynamic SRE Telemetry Stats Card */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-xl space-y-3 text-xs">
-              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-                <span className="font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Server className="w-3.5 h-3.5 text-indigo-400" />
-                  Cluster Telemetry
-                </span>
-                <span className="text-[10px] font-mono text-emerald-400">GKE us-central1</span>
-              </div>
-              <div className="space-y-2 font-mono text-slate-400">
-                <div className="flex justify-between">
-                  <span>Worker Pod:</span>
-                  <span className="text-slate-200 truncate">
-                    {incident.status === 'IDLE' ? 'transcode-pool-idle' : 'transcode-worker-7f89b'}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Exit Signal:</span>
-                  {incident.status === 'IDLE' ? (
-                    <span className="text-emerald-400 font-semibold">None (Nominal)</span>
-                  ) : incident.status === 'RESOLVED' ? (
-                    <span className="text-emerald-400 font-semibold">Recovered (Exit 0)</span>
-                  ) : selectedScenario === 'UNSUPPORTED_PIXEL_FORMAT' ? (
-                    <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
-                  ) : selectedScenario === 'FFMPEG_OOM' ? (
-                    <span className="text-rose-400 font-semibold">SIGABRT (Exit 137 OOM)</span>
-                  ) : (
-                    <span className="text-rose-400 font-semibold">SIGTERM (Exit 1)</span>
-                  )}
-                </div>
-                <div className="flex justify-between">
-                  <span>Self-Healing Loop:</span>
-                  {incident.status === 'IDLE' ? (
-                    <span className="text-slate-500">Standby (0 active)</span>
-                  ) : incident.status === 'RESOLVED' ? (
-                    <span className="text-emerald-400 font-semibold">1 / 1 Remediated &amp; Verified</span>
-                  ) : (
-                    <span className="text-cyan-400 font-semibold">{incident.retry_count} / 2 Retries</span>
-                  )}
-                </div>
-                <div className="flex justify-between">
-                  <span>Telemetry Source:</span>
-                  <span className="text-orange-400 font-mono">
-                    {pipelineOnline ? 'Live Worker :4001' : 'Simulation Mode'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column: Diff Viewer & Isolated Sandbox Terminal (8 Cols) */}
-          <div className="lg:col-span-8 flex flex-col space-y-4">
+        {/* Clean Green "ALL SYSTEMS NOMINAL" Cluster Overview (when IDLE) OR Dual Grid (when Active/Remediating) */}
+        {incident.status === 'IDLE' ? (
+          <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-8 shadow-2xl relative overflow-hidden backdrop-blur-md">
+            <div className="absolute -top-24 -right-24 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
             
-            {/* View Switcher Tabs */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={() => setActiveTab('diff')}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                    activeTab === 'diff'
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Proposed Git Unified Patch
-                </button>
-                <button
-                  onClick={() => setActiveTab('logs')}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center space-x-1.5 ${
-                    activeTab === 'logs'
-                      ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <span>Sandbox Jest Test Output</span>
-                  {incident.test_passed && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  )}
-                </button>
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative z-10 border-b border-slate-800/80 pb-6">
+              <div className="flex items-start space-x-4">
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 ring-2 ring-emerald-500/20 shadow-lg shadow-emerald-950">
+                  <ShieldCheck className="w-8 h-8 stroke-[2.2]" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[11px] font-mono font-bold tracking-widest text-emerald-400 uppercase bg-emerald-950/60 px-2.5 py-0.5 rounded border border-emerald-500/30">
+                      SYSTEM STATUS: NOMINAL
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+                      Live Monitoring
+                    </span>
+                  </div>
+                  <h2 className="text-2xl font-bold text-white tracking-tight mt-1.5">
+                    ALL SYSTEMS NOMINAL (0 Active Incidents)
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
+                    CutGuard AI autonomous SRE agent is actively monitoring cluster telemetry streams (Grafana Loki &amp; OpenTelemetry). Transcoding worker pods are running within normal memory and bitrate parameters.
+                  </p>
+                </div>
               </div>
 
-              <div className="text-[11px] text-slate-500 font-mono">
-                Target: {incident.culprit_file || 'mock-pipeline/worker.js'}
+              <button
+                onClick={() => handleSimulateCrash(selectedScenario)}
+                disabled={isSimulating}
+                className="px-5 py-3 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-rose-950/60 border border-rose-400/40 transition-all duration-200 active:scale-95 disabled:opacity-50 whitespace-nowrap"
+              >
+                <Play className="w-4 h-4 fill-white" />
+                <span>Simulate Pipeline Crash</span>
+              </button>
+            </div>
+
+            {/* Health & Cluster Matrix */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+              <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400 font-semibold flex items-center gap-1.5">
+                    <Server className="w-3.5 h-3.5 text-indigo-400" />
+                    Transcoder Worker
+                  </span>
+                  <span className={`w-2 h-2 rounded-full ${pipelineOnline ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-500'}`} />
+                </div>
+                <div className="text-base font-bold font-mono text-white">
+                  {pipelineOnline ? 'Port 4001 ONLINE' : 'OFFLINE'}
+                </div>
+                <div className="text-[11px] text-slate-500 font-mono">
+                  {pipelineOnline ? 'ffmpeg-transcoder pool: 4' : 'Connection refused'}
+                </div>
+              </div>
+
+              <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400 font-semibold flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                    LangGraph SRE Agent
+                  </span>
+                  <span className={`w-2 h-2 rounded-full ${agentOnline ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-500'}`} />
+                </div>
+                <div className="text-base font-bold font-mono text-white">
+                  {agentOnline ? 'Port 8000 ARMED' : 'OFFLINE'}
+                </div>
+                <div className="text-[11px] text-slate-500 font-mono">
+                  {agentOnline ? 'Gemini 2.5 + HITL Gate' : 'FastAPI unavailable'}
+                </div>
+              </div>
+
+              <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400 font-semibold flex items-center gap-1.5">
+                    <Activity className="w-3.5 h-3.5 text-orange-400" />
+                    Telemetry Pipeline
+                  </span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+                </div>
+                <div className="text-base font-bold font-mono text-white">
+                  Grafana Loki MCP
+                </div>
+                <div className="text-[11px] text-slate-500 font-mono">
+                  Stream: &#123;app=&quot;transcoder&quot;&#125;
+                </div>
+              </div>
+
+              <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400 font-semibold flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-purple-400" />
+                    Blast Radius Radar
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-emerald-400">0% Risk</span>
+                </div>
+                <div className="text-base font-bold font-mono text-white">
+                  AST Analyzer Ready
+                </div>
+                <div className="text-[11px] text-slate-500 font-mono">
+                  Zero active regressions
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Dual Grid: Blast Radius Left + Code Diff / Test Logs Right */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Left Column: Blast Radius Analysis (4 Cols) */}
+            <div className="lg:col-span-4 space-y-6">
+              <BlastRadiusRadar
+                score={incident.blast_score}
+                details={incident.blast_details}
+              />
+
+              {/* Live Dynamic SRE Telemetry Stats Card */}
+              <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-xl space-y-3 text-xs">
+                <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                  <span className="font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Server className="w-3.5 h-3.5 text-indigo-400" />
+                    Cluster Telemetry
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-400">GKE us-central1</span>
+                </div>
+                <div className="space-y-2 font-mono text-slate-400">
+                  <div className="flex justify-between">
+                    <span>Worker Pod:</span>
+                    <span className="text-slate-200 truncate">
+                      {incident.status === 'IDLE' ? 'transcode-pool-idle' : 'transcode-worker-7f89b'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Exit Signal:</span>
+                    {incident.status === 'IDLE' ? (
+                      <span className="text-emerald-400 font-semibold">None (Nominal)</span>
+                    ) : incident.status === 'RESOLVED' ? (
+                      <span className="text-emerald-400 font-semibold">Recovered (Exit 0)</span>
+                    ) : selectedScenario === 'UNSUPPORTED_PIXEL_FORMAT' ? (
+                      <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
+                    ) : selectedScenario === 'FFMPEG_OOM' ? (
+                      <span className="text-rose-400 font-semibold">SIGABRT (Exit 137 OOM)</span>
+                    ) : (
+                      <span className="text-rose-400 font-semibold">SIGTERM (Exit 1)</span>
+                    )}
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Self-Healing Loop:</span>
+                    {incident.status === 'IDLE' ? (
+                      <span className="text-slate-500">Standby (0 active)</span>
+                    ) : incident.status === 'RESOLVED' ? (
+                      <span className="text-emerald-400 font-semibold">1 / 1 Remediated &amp; Verified</span>
+                    ) : (
+                      <span className="text-cyan-400 font-semibold">{incident.retry_count} / 2 Retries</span>
+                    )}
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Telemetry Source:</span>
+                    <span className="text-orange-400 font-mono">
+                      {pipelineOnline ? 'Live Worker :4001' : 'Simulation Mode'}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* Tab Body */}
-            <div className="flex-1">
-              {activeTab === 'diff' ? (
-                <DiffViewer
-                  diff={incident.generated_diff}
-                  culpritFile={incident.culprit_file}
-                  testPassed={incident.test_passed}
-                />
-              ) : (
-                <SandboxLogs
-                  logs={incident.test_output}
-                  testPassed={incident.test_passed}
-                  retryCount={incident.retry_count}
-                  status={incident.status}
-                />
-              )}
+            {/* Right Column: Diff Viewer & Isolated Sandbox Terminal (8 Cols) */}
+            <div className="lg:col-span-8 flex flex-col space-y-4">
+              
+              {/* View Switcher Tabs */}
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setActiveTab('diff')}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                      activeTab === 'diff'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Proposed Git Unified Patch
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('logs')}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center space-x-1.5 ${
+                      activeTab === 'logs'
+                        ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>Sandbox Jest Test Output</span>
+                    {incident.test_passed && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    )}
+                  </button>
+                </div>
+
+                <div className="text-[11px] text-slate-500 font-mono">
+                  Target: {incident.culprit_file || 'mock-pipeline/worker.js'}
+                </div>
+              </div>
+
+              {/* Tab Body */}
+              <div className="flex-1">
+                {activeTab === 'diff' ? (
+                  <DiffViewer
+                    diff={incident.generated_diff}
+                    culpritFile={incident.culprit_file}
+                    testPassed={incident.test_passed}
+                  />
+                ) : (
+                  <SandboxLogs
+                    logs={incident.test_output}
+                    testPassed={incident.test_passed}
+                    retryCount={incident.retry_count}
+                    status={incident.status}
+                  />
+                )}
+              </div>
+
             </div>
 
           </div>
-
-        </div>
+        )}
 
       </main>
 
