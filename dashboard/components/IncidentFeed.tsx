@@ -53,11 +53,12 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
       case 'SANDBOXED': return 3;
       case 'NEEDS_APPROVAL': return 4;
       case 'RESOLVED': return 5;
-      default: return 0;
+      default: return -1;
     }
   };
 
   const activeIndex = getStageIndex(status);
+  const isNominal = status === 'IDLE' || status === 'RESOLVED';
 
   return (
     <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-xl space-y-5">
@@ -65,8 +66,16 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
       {/* Top Banner: Incident Meta */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
         <div className="flex items-center space-x-3">
-          <div className="p-2 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20">
-            <AlertCircle className="w-4 h-4" />
+          <div className={`p-2 rounded-lg border ${
+            isNominal
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+              : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+          }`}>
+            {isNominal ? (
+              <CheckCircle2 className="w-4 h-4" />
+            ) : (
+              <AlertCircle className="w-4 h-4" />
+            )}
           </div>
           <div>
             <div className="flex items-center space-x-2">
@@ -88,7 +97,7 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
             Lifecycle State:
           </span>
           <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${
-            status === 'RESOLVED'
+            status === 'RESOLVED' || status === 'IDLE'
               ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
               : status === 'NEEDS_APPROVAL'
               ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
@@ -96,7 +105,7 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
               ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
               : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
           }`}>
-            {status.replace('_', ' ')}
+            {status === 'IDLE' ? 'NOMINAL / IDLE' : status.replace('_', ' ')}
           </span>
         </div>
       </div>
@@ -156,7 +165,7 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
 
         {showLog && (
           <div className="p-3 border-t border-slate-800/80 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto bg-black/40 leading-relaxed whitespace-pre-wrap">
-            {rawLog || "Awaiting incident logs from Grafana MCP..."}
+            {rawLog || (status === 'IDLE' ? "Pipeline operational. All video transcoding services healthy. No crash alerts detected in Grafana Loki." : "Awaiting incident logs from Grafana MCP...")}
           </div>
         )}
       </div>

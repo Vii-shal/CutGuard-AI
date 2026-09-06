@@ -100,8 +100,11 @@ async def triage_node(state: IncidentState) -> Dict[str, Any]:
         except Exception as e:
             print(f"[Triage Node] Gemini Flash parse fallback: {e}")
 
-    # Normalize culprit file path
-    if "worker.js" in culprit_file and not culprit_file.startswith("mock-pipeline"):
+    # Check if telemetry already supplied the culprit file
+    if grafana_telemetry.get("failing_file"):
+        ff = str(grafana_telemetry.get("failing_file"))
+        culprit_file = ff if ff.startswith("mock-pipeline/") else f"mock-pipeline/{ff}"
+    elif "worker.js" in culprit_file and not culprit_file.startswith("mock-pipeline"):
         culprit_file = "mock-pipeline/worker.js"
 
     return {
@@ -390,6 +393,24 @@ CutGuard AI intercepted the crash telemetry, mapped the blast radius across depe
 """
 
     print("[DEPLOY NODE] Deployment complete. RCA Post-Mortem compiled.")
+
+    # Notify mock-pipeline on port 4001 to sync state
+    pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
+    try:
+        import requests
+        requests.post(
+            f"http://localhost:{pipeline_port}/api/patch/apply",
+            json={
+                "patch": diff,
+                "incidentId": state.get("incident_id"),
+                "operatorSignOff": True
+            },
+            timeout=2.0
+        )
+        requests.post(f"http://localhost:{pipeline_port}/api/chaos/reset", timeout=2.0)
+        print(f"[DEPLOY NODE] Notified mock-pipeline on port {pipeline_port}. Pipeline normalized to HEALTHY.")
+    except Exception as e:
+        print(f"[DEPLOY NODE] mock-pipeline sync notice: {e}")
 
     return {
         "post_mortem": post_mortem,

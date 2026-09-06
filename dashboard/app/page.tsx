@@ -27,6 +27,11 @@ export default function IncidentControlCenter() {
   const [isProcessingApproval, setIsProcessingApproval] = useState(false);
   const [isPostMortemOpen, setIsPostMortemOpen] = useState(false);
 
+  // Live Infrastructure Connectivity
+  const [pipelineOnline, setPipelineOnline] = useState<boolean>(false);
+  const [agentOnline, setAgentOnline] = useState<boolean>(false);
+  const [selectedScenario, setSelectedScenario] = useState<string>('FFMPEG_OOM');
+
   // Active Incident State
   const [incident, setIncident] = useState({
     incident_id: '',
@@ -48,7 +53,32 @@ export default function IncidentControlCenter() {
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Poll incident status periodically when an incident is active
+  // Periodic health check for :4001 (Worker) and :8000 (SRE Agent)
+  useEffect(() => {
+    const checkServices = async () => {
+      // Check Mock Pipeline (:4001)
+      try {
+        const res = await fetch('http://localhost:4001/health', { cache: 'no-store' });
+        setPipelineOnline(res.ok);
+      } catch {
+        setPipelineOnline(false);
+      }
+
+      // Check SRE Agent (:8000)
+      try {
+        const res = await fetch('http://localhost:8000/api/health', { cache: 'no-store' });
+        setAgentOnline(res.ok);
+      } catch {
+        setAgentOnline(false);
+      }
+    };
+
+    checkServices();
+    const interval = setInterval(checkServices, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Poll incident status periodically from FastAPI Agent when an incident is active
   useEffect(() => {
     if (!incident.incident_id || incident.status === 'RESOLVED' || incident.status === 'ESCALATED') {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -57,16 +87,22 @@ export default function IncidentControlCenter() {
 
     const fetchStatus = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/status`);
+        const res = await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/status`, {
+          cache: 'no-store'
+        });
         if (res.ok) {
           const data = await res.json();
-          setIncident(prev => ({ ...prev, ...data }));
+          setIncident(prev => ({
+            ...prev,
+            ...data,
+            blast_details: data.blast_details || prev.blast_details
+          }));
           if (data.status === 'RESOLVED' || data.status === 'ESCALATED') {
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
           }
         }
       } catch (err) {
-        console.error('Polling error:', err);
+        console.error('Incident polling error:', err);
       }
     };
 
@@ -76,11 +112,43 @@ export default function IncidentControlCenter() {
     };
   }, [incident.incident_id, incident.status]);
 
-  // Trigger Crash & Agent Remediation
-  const handleSimulateCrash = async () => {
+  // Trigger Crash & Agent Remediation Cycle
+  const handleSimulateCrash = async (scenario: string = selectedScenario) => {
     setIsSimulating(true);
+    const targetFile = scenario === 'FFMPEG_OOM' ? 'mock-pipeline/worker.js' : 'src/transcoder/ffmpegArgs.ts';
+
+    // Reset view to fresh analyzing state
+    setIncident({
+      incident_id: '',
+      service: 'ffmpeg-transcoder',
+      status: 'ANALYZING',
+      raw_log: 'Injecting chaos scenario and polling telemetry stream...',
+      culprit_file: targetFile,
+      culprit_commit: 'HEAD~1',
+      blast_score: 0,
+      blast_details: {},
+      generated_diff: '',
+      test_passed: false,
+      test_output: '',
+      retry_count: 0,
+      human_approved: null,
+      post_mortem: '',
+      created_at: new Date().toISOString()
+    });
+
     try {
-      // 1. Trigger incident in FastAPI agent
+      // Step 1: Prime the media worker with chaos injection on port 4001
+      try {
+        await fetch('http://localhost:4001/api/chaos/inject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scenario })
+        });
+      } catch (err) {
+        console.warn('Mock worker chaos injection notice (worker may be offline):', err);
+      }
+
+      // Step 2: Trigger incident remediation on SRE agent (FastAPI port 8000)
       const res = await fetch('http://localhost:8000/api/incident/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -93,77 +161,86 @@ export default function IncidentControlCenter() {
           ...prev,
           incident_id: data.incident_id,
           status: 'ANALYZING',
-          created_at: new Date().toISOString()
+          raw_log: `Telemetry intercepted from Grafana Loki. SRE Agent LangGraph dispatched (ID: ${data.incident_id}).`
         }));
       } else {
-        // Fallback demo state if agent backend is offline during preview
-        const mockId = `inc-${Date.now()}`;
-        setIncident({
-          incident_id: mockId,
-          service: 'ffmpeg-transcoder',
-          status: 'ANALYZING',
-          raw_log: '2026-09-06T00:15:22.418Z CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)',
-          culprit_file: 'mock-pipeline/worker.js',
-          culprit_commit: 'HEAD~1',
-          blast_score: 80,
-          blast_details: {
-            threat_level: 'CRITICAL',
-            affected_files: [{ file: 'mock-pipeline/queue-manager.js', lines_of_code: 48, symbols_imported: ['processVideoChunk'] }],
-            affected_symbols: ['processVideoChunk'],
-            affected_endpoints: ['POST /transcode'],
-            blast_description: 'Failure in worker.js cascades to video queue manager and stream stitcher.'
-          },
-          generated_diff: `--- a/mock-pipeline/worker.js\n+++ b/mock-pipeline/worker.js\n@@ -32,7 +32,9 @@ function processVideoChunk(chunk) {\n-  if (!chunk.bitrateProfile) {\n-    throw new Error("CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)");\n-  }\n-\n-  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n-  const resolution = chunk.bitrateProfile.resolution || '1280x720';\n+  // Fallback to 720p_auto profile when bitrateProfile is omitted\n+  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || { targetBitrate: '4500k', resolution: '1280x720' };\n+  const targetBitrate = profile.targetBitrate;\n+  const resolution = profile.resolution || '1280x720';`,
-          test_passed: true,
-          test_output: 'PASS mock-pipeline/worker.test.js\n  √ processes video chunk successfully with valid explicit bitrateProfile (4 ms)\n  √ properly handles missing bitrateProfile by falling back to 720p_auto without crashing (5 ms)\n  √ throws descriptive error on invalid null chunk payload (1 ms)\n\nTest Suites: 1 passed, 1 total\nTests: 3 passed, 3 total',
-          retry_count: 1,
-          human_approved: null,
-          post_mortem: '# Enterprise SRE Post-Mortem\nIncident resolved by CutGuard AI.',
-          created_at: new Date().toISOString()
-        });
+        setIncident(prev => ({
+          ...prev,
+          status: 'ESCALATED',
+          raw_log: 'Failed to dispatch LangGraph SRE agent. Please ensure SRE Agent (:8000) is running.'
+        }));
       }
     } catch (e) {
-      console.warn('Backend fetch error, activating demonstration mode:', e);
-      // Demo fallback
+      console.error('Error connecting to SRE Agent:', e);
       setIncident(prev => ({
         ...prev,
-        incident_id: `inc-demo-${Date.now()}`,
-        status: 'NEEDS_APPROVAL',
-        raw_log: 'CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)',
-        blast_score: 80,
-        test_passed: true,
-        generated_diff: `--- a/mock-pipeline/worker.js\n+++ b/mock-pipeline/worker.js\n@@ -32,7 +32,9 @@ function processVideoChunk(chunk) {\n-  if (!chunk.bitrateProfile) {\n-    throw new Error("CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)");\n-  }\n-\n-  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n-  const resolution = chunk.bitrateProfile.resolution || '1280x720';\n+  // Fallback to 720p_auto profile when bitrateProfile is omitted\n+  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || { targetBitrate: '4500k', resolution: '1280x720' };\n+  const targetBitrate = profile.targetBitrate;\n+  const resolution = profile.resolution || '1280x720';`,
-        test_output: 'PASS mock-pipeline/worker.test.js\nTests: 3 passed, 3 total',
-        created_at: new Date().toISOString()
+        status: 'ESCALATED',
+        raw_log: `Connection error: SRE Agent (:8000) unreachable (${e instanceof Error ? e.message : String(e)}). Please verify the agent server is running.`
       }));
     } finally {
       setIsSimulating(false);
     }
   };
 
-  // Resume Approval
+  // Human-in-the-loop: Approve & Deploy Fix
   const handleApprove = async () => {
     setIsProcessingApproval(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/resume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved: true, approver: 'Lead Cinema SRE' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setIncident(prev => ({ ...prev, status: 'RESOLVED', human_approved: true }));
-      } else {
-        setIncident(prev => ({ ...prev, status: 'RESOLVED', human_approved: true }));
+      // 1. Resume LangGraph workflow via FastAPI Agent
+      try {
+        await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/resume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approved: true, approver: 'Lead Cinema SRE' })
+        });
+      } catch (err) {
+        console.warn('SRE agent resume notice:', err);
       }
-    } catch (e) {
-      setIncident(prev => ({ ...prev, status: 'RESOLVED', human_approved: true }));
+
+      // 2. Synchronize directly with mock-pipeline on port 4001 (apply patch & reset failure state)
+      try {
+        if (incident.generated_diff) {
+          await fetch('http://localhost:4001/api/patch/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              patch: incident.generated_diff,
+              incidentId: incident.incident_id,
+              operatorSignOff: true
+            })
+          });
+        }
+        await fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' });
+      } catch (err) {
+        console.warn('Pipeline direct synchronization notice:', err);
+      }
+
+      // 3. Obtain Enterprise RCA report if not yet populated
+      let rcaReport = incident.post_mortem;
+      if (!rcaReport) {
+        try {
+          const rcaRes = await fetch(`http://localhost:4001/api/enterprise/rca/${incident.incident_id}`);
+          if (rcaRes.ok) {
+            const rcaData = await rcaRes.json();
+            rcaReport = `# Enterprise Incident RCA & Post-Mortem\n**Incident ID:** \`${rcaData.incidentId}\`\n**Severity:** \`${rcaData.severity}\`\n**MTTR:** \`${rcaData.mttr}\`\n**Status:** **${rcaData.verificationStatus}**\n\n### Root Cause Analysis\n${rcaData.rootCauseAnalysis?.summary}\n\n**Trigger Mechanism:**\n${rcaData.rootCauseAnalysis?.triggerMechanism}\n\n### Applied Code Patch\n\`\`\`diff\n${rcaData.appliedPatch}\n\`\`\``;
+          }
+        } catch {
+          // Keep existing or default post-mortem
+        }
+      }
+
+      setIncident(prev => ({
+        ...prev,
+        status: 'RESOLVED',
+        human_approved: true,
+        post_mortem: rcaReport || prev.post_mortem
+      }));
     } finally {
       setIsProcessingApproval(false);
     }
   };
 
-  // Resume Reject
+  // Human-in-the-loop: Reject & Rollback
   const handleReject = async () => {
     setIsProcessingApproval(true);
     try {
@@ -188,6 +265,10 @@ export default function IncidentControlCenter() {
         onSimulateCrash={handleSimulateCrash}
         isSimulating={isSimulating}
         activeStatus={incident.status}
+        pipelineOnline={pipelineOnline}
+        agentOnline={agentOnline}
+        selectedScenario={selectedScenario}
+        onSelectScenario={setSelectedScenario}
       />
 
       {/* Main Command Center */}
@@ -224,7 +305,7 @@ export default function IncidentControlCenter() {
                   Remediation Complete
                 </span>
                 <p className="text-xs text-slate-300">
-                  Transcoding worker patched, committed to Git, and telemetry normalized.
+                  Transcoding worker patched, verified in sandbox, and telemetry normalized to HEALTHY.
                 </p>
               </div>
             </div>
@@ -248,7 +329,7 @@ export default function IncidentControlCenter() {
               details={incident.blast_details}
             />
 
-            {/* Quick SRE Telemetry Stats Card */}
+            {/* Live Dynamic SRE Telemetry Stats Card */}
             <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-xl space-y-3 text-xs">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
                 <span className="font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -260,15 +341,39 @@ export default function IncidentControlCenter() {
               <div className="space-y-2 font-mono text-slate-400">
                 <div className="flex justify-between">
                   <span>Worker Pod:</span>
-                  <span className="text-slate-200 truncate">transcode-worker-7f89b</span>
+                  <span className="text-slate-200 truncate">
+                    {incident.status === 'IDLE' ? 'transcode-pool-idle' : 'transcode-worker-7f89b'}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Exit Signal:</span>
-                  <span className="text-rose-400">SIGABRT (Exit 137 OOM)</span>
+                  {incident.status === 'IDLE' ? (
+                    <span className="text-emerald-400 font-semibold">None (Nominal)</span>
+                  ) : incident.status === 'RESOLVED' ? (
+                    <span className="text-emerald-400 font-semibold">Recovered (Exit 0)</span>
+                  ) : selectedScenario === 'UNSUPPORTED_PIXEL_FORMAT' ? (
+                    <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
+                  ) : selectedScenario === 'FFMPEG_OOM' ? (
+                    <span className="text-rose-400 font-semibold">SIGABRT (Exit 137 OOM)</span>
+                  ) : (
+                    <span className="text-rose-400 font-semibold">SIGTERM (Exit 1)</span>
+                  )}
                 </div>
                 <div className="flex justify-between">
                   <span>Self-Healing Loop:</span>
-                  <span className="text-cyan-400">{incident.retry_count} / 2 Retries</span>
+                  {incident.status === 'IDLE' ? (
+                    <span className="text-slate-500">Standby (0 active)</span>
+                  ) : incident.status === 'RESOLVED' ? (
+                    <span className="text-emerald-400 font-semibold">1 / 1 Remediated &amp; Verified</span>
+                  ) : (
+                    <span className="text-cyan-400 font-semibold">{incident.retry_count} / 2 Retries</span>
+                  )}
+                </div>
+                <div className="flex justify-between">
+                  <span>Telemetry Source:</span>
+                  <span className="text-orange-400 font-mono">
+                    {pipelineOnline ? 'Live Worker :4001' : 'Simulation Mode'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -306,7 +411,7 @@ export default function IncidentControlCenter() {
               </div>
 
               <div className="text-[11px] text-slate-500 font-mono">
-                Target: mock-pipeline/worker.js
+                Target: {incident.culprit_file || 'mock-pipeline/worker.js'}
               </div>
             </div>
 

@@ -79,7 +79,7 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
   const incidentId = `inc-chaos-${Math.floor(10000 + Math.random() * 90000)}`;
 
   let errorSignature = '';
-  let failingFile = 'src/transcoder/ffmpegArgs.ts';
+  let failingFile = 'mock-pipeline/worker.js';
   let exitCode = 1;
   let signal = 'SIGABRT';
   let stderrLog = '';
@@ -89,6 +89,7 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
       errorSignature = "Invalid pixel format 'yuv422p10le' for codec 'libx264' with profile 'baseline'. Transcoding process killed with SIGSEGV (exit code 139)";
       exitCode = 139;
       signal = 'SIGSEGV';
+      failingFile = 'mock-pipeline/worker.js';
       stderrLog = `[ERROR] [FFMPEG_ENCODE] [${randomJobId}] Fatal error: Invalid pixel format 'yuv422p10le' for codec 'libx264' with profile 'baseline'. Transcoding process killed with SIGSEGV (exit code 139).`;
       break;
 
@@ -104,6 +105,7 @@ chaosRouter.post('/inject', (req: Request, res: Response) => {
       errorSignature = "Non-monotonic DTS at muxer boundary. Segment packet header corrupted (Exit 1)";
       exitCode = 1;
       signal = 'SIGTERM';
+      failingFile = 'mock-pipeline/worker.js';
       stderrLog = `[ERROR] [MUXER] [${randomJobId}] Fatal error: Non-monotonic DTS in input stream. Video muxing aborted.`;
       break;
   }

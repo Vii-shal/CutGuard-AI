@@ -66,6 +66,34 @@ class GrafanaMCPClient:
             except Exception as e:
                 print(f"[GrafanaMCP] Live MCP connection notice ({e}). Falling back to telemetry stream.")
 
+        # Check live mock-pipeline telemetry stream if available on port 4001
+        pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
+        try:
+            import requests
+            chaos_res = requests.get(f"http://localhost:{pipeline_port}/api/chaos/status", timeout=1.5)
+            if chaos_res.status_code == 200:
+                chaos_data = chaos_res.json()
+                active_inc = chaos_data.get("activeIncident")
+                if active_inc:
+                    raw_log = (
+                        f"{active_inc.get('timestamp')} level=CRITICAL app={service_name} stage={active_inc.get('affectedPipelineStage')} "
+                        f"exitCode={active_inc.get('exitCode')} signal={active_inc.get('signal')} "
+                        f"failingFile={active_inc.get('failingFile')}\n"
+                        f"{active_inc.get('rawStderr')}"
+                    )
+                    return {
+                        "source": "mock-pipeline-live",
+                        "query": logql_query,
+                        "service": service_name,
+                        "timestamp": active_inc.get("timestamp"),
+                        "raw_log": raw_log,
+                        "incident_id": active_inc.get("incidentId"),
+                        "failing_file": active_inc.get("failingFile"),
+                        "scenario": active_inc.get("scenario")
+                    }
+        except Exception as e:
+            pass
+
         # High-fidelity telemetry log simulation for local test runs & hackathon demo
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         incident_log = (

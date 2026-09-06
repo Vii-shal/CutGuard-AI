@@ -16,9 +16,13 @@ interface BlastRadiusRadarProps {
 }
 
 export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, details }) => {
-  const threatLevel = details?.threat_level || (score >= 80 ? 'CRITICAL' : score >= 50 ? 'HIGH' : score >= 25 ? 'MEDIUM' : 'LOW');
+  const isHealthy = score === 0;
+  const threatLevel = isHealthy
+    ? 'NOMINAL'
+    : details?.threat_level || (score >= 80 ? 'CRITICAL' : score >= 50 ? 'HIGH' : score >= 25 ? 'MEDIUM' : 'LOW');
 
   const getScoreColor = () => {
+    if (isHealthy) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
     if (score >= 80) return 'text-rose-500 border-rose-500/30 bg-rose-500/10';
     if (score >= 50) return 'text-amber-400 border-amber-500/30 bg-amber-500/10';
     if (score >= 25) return 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10';
@@ -26,6 +30,7 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
   };
 
   const getGaugeStroke = () => {
+    if (isHealthy) return '#10b981';
     if (score >= 80) return '#ef4444';
     if (score >= 50) return '#f59e0b';
     if (score >= 25) return '#06b6d4';
@@ -34,7 +39,7 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
 
   const radius = 42;
   const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (score / 100) * circumference;
+  const strokeDashoffset = isHealthy ? 0 : circumference - (score / 100) * circumference;
 
   return (
     <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-xl flex flex-col justify-between">
@@ -47,7 +52,7 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
             </h2>
           </div>
           <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-mono font-bold border uppercase tracking-wider ${getScoreColor()}`}>
-            {threatLevel} THREAT
+            {threatLevel}
           </span>
         </div>
 
@@ -70,18 +75,18 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
                 stroke={getGaugeStroke()}
                 strokeWidth="8"
                 strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
+                strokeDashoffset={isHealthy ? circumference : strokeDashoffset}
                 strokeLinecap="round"
                 fill="transparent"
                 className="transition-all duration-1000 ease-out"
               />
             </svg>
             <div className="absolute flex flex-col items-center justify-center text-center">
-              <span className="text-3xl font-black font-mono tracking-tight text-white">
+              <span className={`text-3xl font-black font-mono tracking-tight ${isHealthy ? 'text-emerald-400' : 'text-white'}`}>
                 {score}
               </span>
               <span className="text-[10px] uppercase font-bold text-slate-400">
-                / 100 Impact
+                {isHealthy ? 'Nominal SLO' : '/ 100 Impact'}
               </span>
             </div>
           </div>
@@ -89,7 +94,9 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
 
         {/* Description */}
         <p className="text-xs text-slate-400 text-center px-2 mb-4 leading-relaxed">
-          {details?.blast_description || "Calculated via deterministic static call-graph inspection of imported pipeline modules."}
+          {isHealthy
+            ? "All media chunk workers and downstream consumers are operating within nominal SLO thresholds."
+            : (details?.blast_description || "Calculated via deterministic static call-graph inspection of imported pipeline modules.")}
         </p>
 
         {/* Affected Services List */}
@@ -99,7 +106,12 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
             Cascading Downstream Consumers
           </span>
           <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-            {details?.affected_files && details.affected_files.length > 0 ? (
+            {isHealthy ? (
+              <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-500/20 text-xs text-emerald-400 font-mono text-center flex items-center justify-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span>No active cascading risks detected</span>
+              </div>
+            ) : details?.affected_files && details.affected_files.length > 0 ? (
               details.affected_files.map((item, idx) => (
                 <div
                   key={idx}
@@ -129,15 +141,23 @@ export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, detai
             Protected Video Chunk Interfaces
           </span>
           <div className="text-[11px] font-mono text-slate-400 space-y-1">
-            <div className="flex items-center space-x-2">
-              <span className="text-cyan-400 font-bold">›</span>
-              <span className="text-slate-300 font-semibold">POST /transcode</span>
-              <span className="text-slate-500">(Ingress Chunker)</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className={isHealthy ? "text-emerald-400 font-bold" : "text-cyan-400 font-bold"}>›</span>
+                <span className="text-slate-300 font-semibold">POST /transcode</span>
+              </div>
+              <span className={isHealthy ? "text-[10px] text-emerald-400" : "text-slate-500"}>
+                {isHealthy ? "Healthy" : "(Ingress Chunker)"}
+              </span>
             </div>
-            <div className="flex items-center space-x-2">
-              <span className="text-cyan-400 font-bold">›</span>
-              <span className="text-slate-300 font-semibold">StreamStitcher.stitchStream</span>
-              <span className="text-slate-500">(HLS Master)</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className={isHealthy ? "text-emerald-400 font-bold" : "text-cyan-400 font-bold"}>›</span>
+                <span className="text-slate-300 font-semibold">StreamStitcher.stitchStream</span>
+              </div>
+              <span className={isHealthy ? "text-[10px] text-emerald-400" : "text-slate-500"}>
+                {isHealthy ? "Healthy" : "(HLS Master)"}
+              </span>
             </div>
           </div>
         </div>
