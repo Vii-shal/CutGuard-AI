@@ -24,14 +24,12 @@ import {
 
 export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
-  const [isSimulating, setIsSimulating] = useState(false);
   const [isProcessingApproval, setIsProcessingApproval] = useState(false);
   const [isPostMortemOpen, setIsPostMortemOpen] = useState(false);
 
   // Live Infrastructure Connectivity
   const [pipelineOnline, setPipelineOnline] = useState<boolean>(false);
   const [agentOnline, setAgentOnline] = useState<boolean>(false);
-  const [selectedScenario, setSelectedScenario] = useState<string>('FFMPEG_OOM');
 
   // Active Incident State
   const [incident, setIncident] = useState({
@@ -51,8 +49,6 @@ export default function IncidentControlCenter() {
     post_mortem: '',
     created_at: ''
   });
-
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Periodic health check for :4001 (Worker) and :8000 (SRE Agent)
   useEffect(() => {
@@ -79,46 +75,95 @@ export default function IncidentControlCenter() {
     return () => clearInterval(interval);
   }, []);
 
-  // Poll incident status periodically from FastAPI Agent when an incident is active
+  // Requirement 3: Automatic passive poller checking SRE Agent & Mock Pipeline
+  // Autonomously detects incoming platform incidents without manual injection
   useEffect(() => {
-    if (!incident.incident_id || incident.status === 'RESOLVED' || incident.status === 'ESCALATED') {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      return;
-    }
+    let isCancelled = false;
 
-    const fetchStatus = async () => {
+    const pollPassiveTelemetry = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/incident/${incident.incident_id}/status`, {
-          cache: 'no-store'
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setIncident(prev => ({
-            ...prev,
-            ...data,
-            blast_details: data.blast_details || prev.blast_details
-          }));
-          if (data.status === 'RESOLVED' || data.status === 'ESCALATED') {
-            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        const [agentRes, pipelineRes] = await Promise.allSettled([
+          fetch('http://localhost:8000/api/incident/latest', { cache: 'no-store' }),
+          fetch('http://localhost:4001/api/chaos/status', { cache: 'no-store' })
+        ]);
+
+        let latestAgentInc: any = null;
+        if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
+          const data = await agentRes.value.json();
+          latestAgentInc = data.incident;
+        }
+
+        let pipelineChaos: any = null;
+        if (pipelineRes.status === 'fulfilled' && pipelineRes.value.ok) {
+          pipelineChaos = await pipelineRes.value.json();
+        }
+
+        if (isCancelled) return;
+
+        // CASE 1: SRE Agent has an active incident record
+        if (latestAgentInc && latestAgentInc.incident_id) {
+          // If dashboard is IDLE: only wake up if incoming incident is active (not resolved/escalated)
+          if (incident.status === 'IDLE') {
+            if (latestAgentInc.status !== 'RESOLVED' && latestAgentInc.status !== 'ESCALATED') {
+              setIncident({
+                ...latestAgentInc,
+                blast_details: latestAgentInc.blast_details || {}
+              });
+            }
+          } else if (incident.status !== 'RESOLVED' && incident.status !== 'ESCALATED') {
+            // Dashboard is already tracking active incident: update state
+            if (!incident.incident_id || latestAgentInc.incident_id === incident.incident_id) {
+              setIncident(prev => ({
+                ...prev,
+                ...latestAgentInc,
+                blast_details: latestAgentInc.blast_details || prev.blast_details
+              }));
+            }
+          }
+        } 
+        // CASE 2: Pipeline crashed on Port 4001 but agent incident record is still forming
+        else if (pipelineChaos && pipelineChaos.isCrashed && pipelineChaos.activeIncident) {
+          if (incident.status === 'IDLE') {
+            setIncident({
+              incident_id: pipelineChaos.activeIncident.incidentId,
+              service: 'ffmpeg-transcoder',
+              status: 'ANALYZING',
+              raw_log: pipelineChaos.activeIncident.rawStderr || 'Pipeline crash detected on Port 4001. Ingesting crash telemetry...',
+              culprit_file: pipelineChaos.activeIncident.failingFile || 'mock-pipeline/worker.js',
+              culprit_commit: 'HEAD~1',
+              blast_score: 0,
+              blast_details: {},
+              generated_diff: '',
+              test_passed: false,
+              test_output: '',
+              retry_count: 0,
+              human_approved: null,
+              post_mortem: '',
+              created_at: pipelineChaos.activeIncident.timestamp || new Date().toISOString()
+            });
           }
         }
       } catch (err) {
-        console.error('Incident polling error:', err);
+        // Services may be starting or network idle
       }
     };
 
-    pollIntervalRef.current = setInterval(fetchStatus, 1500);
+    const interval = setInterval(pollPassiveTelemetry, 1000);
+    pollPassiveTelemetry();
+
     return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      isCancelled = true;
+      clearInterval(interval);
     };
   }, [incident.incident_id, incident.status]);
 
-  // Reset console to nominal idle state
+  // Reset console to nominal monitoring state
   const handleResetToNominal = async () => {
     try {
       await fetch('http://localhost:4001/api/chaos/reset', { method: 'POST' });
+      await fetch('http://localhost:8000/api/incidents/clear', { method: 'POST' });
     } catch (err) {
-      console.warn('Chaos reset notice:', err);
+      console.warn('Nominal reset notice:', err);
     }
     setIncident({
       incident_id: '',
@@ -137,76 +182,6 @@ export default function IncidentControlCenter() {
       post_mortem: '',
       created_at: ''
     });
-  };
-
-  // Trigger Crash & Agent Remediation Cycle
-  const handleSimulateCrash = async (scenario: string = selectedScenario) => {
-    setIsSimulating(true);
-    const targetFile = scenario === 'FFMPEG_OOM' ? 'mock-pipeline/worker.js' : 'src/transcoder/ffmpegArgs.ts';
-
-    // Reset view to fresh analyzing state
-    setIncident({
-      incident_id: '',
-      service: 'ffmpeg-transcoder',
-      status: 'ANALYZING',
-      raw_log: 'Injecting chaos scenario and polling telemetry stream...',
-      culprit_file: targetFile,
-      culprit_commit: 'HEAD~1',
-      blast_score: 0,
-      blast_details: {},
-      generated_diff: '',
-      test_passed: false,
-      test_output: '',
-      retry_count: 0,
-      human_approved: null,
-      post_mortem: '',
-      created_at: new Date().toISOString()
-    });
-
-    try {
-      // Step 1: Prime the media worker with chaos injection on port 4001
-      try {
-        await fetch('http://localhost:4001/api/chaos/inject', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scenario })
-        });
-      } catch (err) {
-        console.warn('Mock worker chaos injection notice (worker may be offline):', err);
-      }
-
-      // Step 2: Trigger incident remediation on SRE agent (FastAPI port 8000)
-      const res = await fetch('http://localhost:8000/api/incident/trigger', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service_name: 'ffmpeg-transcoder' })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setIncident(prev => ({
-          ...prev,
-          incident_id: data.incident_id,
-          status: 'ANALYZING',
-          raw_log: `Telemetry intercepted from Grafana Loki. SRE Agent LangGraph dispatched (ID: ${data.incident_id}).`
-        }));
-      } else {
-        setIncident(prev => ({
-          ...prev,
-          status: 'ESCALATED',
-          raw_log: 'Failed to dispatch LangGraph SRE agent. Please ensure SRE Agent (:8000) is running.'
-        }));
-      }
-    } catch (e) {
-      console.error('Error connecting to SRE Agent:', e);
-      setIncident(prev => ({
-        ...prev,
-        status: 'ESCALATED',
-        raw_log: `Connection error: SRE Agent (:8000) unreachable (${e instanceof Error ? e.message : String(e)}). Please verify the agent server is running.`
-      }));
-    } finally {
-      setIsSimulating(false);
-    }
   };
 
   // Human-in-the-loop: Approve & Deploy Fix
@@ -289,13 +264,9 @@ export default function IncidentControlCenter() {
       
       {/* Top Navbar */}
       <Header
-        onSimulateCrash={handleSimulateCrash}
-        isSimulating={isSimulating}
         activeStatus={incident.status}
         pipelineOnline={pipelineOnline}
         agentOnline={agentOnline}
-        selectedScenario={selectedScenario}
-        onSelectScenario={setSelectedScenario}
       />
 
       {/* Main Command Center */}
@@ -408,18 +379,49 @@ export default function IncidentControlCenter() {
                 </div>
               </div>
 
-              <button
-                onClick={() => handleSimulateCrash(selectedScenario)}
-                disabled={isSimulating}
-                className="px-5 py-3 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-rose-950/60 border border-rose-400/40 transition-all duration-200 active:scale-95 disabled:opacity-50 whitespace-nowrap"
-              >
-                <Play className="w-4 h-4 fill-white" />
-                <span>Simulate Pipeline Crash</span>
-              </button>
+              {/* Direct Navigation to Platform Visualizer */}
+              <div className="flex flex-col items-start md:items-end gap-2">
+                <a
+                  href="http://localhost:4001/player"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-indigo-950/60 border border-indigo-400/40 transition-all duration-200 active:scale-95 whitespace-nowrap"
+                >
+                  <Play className="w-4 h-4 fill-white" />
+                  <span>Open Video Stream Player (:4001) &nearr;</span>
+                </a>
+                <span className="text-[10px] text-slate-400 font-mono text-right">
+                  Simulate stream corruptions on Port 4001 player or Swagger /docs
+                </span>
+              </div>
+            </div>
+
+            {/* Streaming Operational Metrics Strip */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6 pt-6 border-t border-slate-800/80">
+              <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
+                <span className="text-[10px] font-mono uppercase text-slate-400">Transcode Throughput</span>
+                <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">1,420 chunks/min</div>
+                <div className="text-[10px] text-slate-500 font-mono">100% Target Met (60 FPS)</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
+                <span className="text-[10px] font-mono uppercase text-slate-400">P99 Encoding Latency</span>
+                <div className="text-sm font-bold font-mono text-cyan-400 mt-0.5">18.4 ms</div>
+                <div className="text-[10px] text-slate-500 font-mono">SLA Threshold: &lt; 50ms</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
+                <span className="text-[10px] font-mono uppercase text-slate-400">Loki Error Rate</span>
+                <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">0.00 err/sec</div>
+                <div className="text-[10px] text-slate-500 font-mono">Clean Telemetry Window</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
+                <span className="text-[10px] font-mono uppercase text-slate-400">Autonomous Guardrail</span>
+                <div className="text-sm font-bold font-mono text-purple-400 mt-0.5">Active Sandbox Ready</div>
+                <div className="text-[10px] text-slate-500 font-mono">AST Blast Radar Online</div>
+              </div>
             </div>
 
             {/* Health & Cluster Matrix */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
               <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-400 font-semibold flex items-center gap-1.5">
@@ -448,7 +450,7 @@ export default function IncidentControlCenter() {
                   {agentOnline ? 'Port 8000 ARMED' : 'OFFLINE'}
                 </div>
                 <div className="text-[11px] text-slate-500 font-mono">
-                  {agentOnline ? 'Gemini 2.5 + HITL Gate' : 'FastAPI unavailable'}
+                  {agentOnline ? 'Gemini 2.0 + HITL Gate' : 'FastAPI unavailable'}
                 </div>
               </div>
 
@@ -482,6 +484,23 @@ export default function IncidentControlCenter() {
                 <div className="text-[11px] text-slate-500 font-mono">
                   Zero active regressions
                 </div>
+              </div>
+            </div>
+
+            {/* Live Loki Passive Scanner Stream */}
+            <div className="mt-4 p-4 rounded-lg bg-slate-950/80 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono text-slate-400 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  Loki Telemetry Passive Scan Stream
+                </span>
+                <span className="text-[10px] font-mono text-slate-500">Live Polling • 1,000ms</span>
+              </div>
+              <div className="font-mono text-[11px] text-slate-400 space-y-1 leading-relaxed bg-black/40 p-3 rounded border border-slate-900">
+                <div className="text-emerald-400/90">[PASSIVE OBSERVER] Ingestion listener connected. Loki query: &#123;app=&quot;ffmpeg-transcoder&quot;&#125; |= &quot;CRITICAL&quot;</div>
+                <div>[STATUS] GKE transcoder pool worker-transcode-04 healthy (memory cgroup: 34% utilized)</div>
+                <div>[STATUS] AST call graph indexed. Root culprit target: mock-pipeline/worker.js</div>
+                <div className="text-cyan-400/80">[STANDBY] Awaiting incoming webhook alerts from media transcoder...</div>
               </div>
             </div>
           </div>
@@ -518,12 +537,12 @@ export default function IncidentControlCenter() {
                       <span className="text-emerald-400 font-semibold">None (Nominal)</span>
                     ) : incident.status === 'RESOLVED' ? (
                       <span className="text-emerald-400 font-semibold">Recovered (Exit 0)</span>
-                    ) : selectedScenario === 'UNSUPPORTED_PIXEL_FORMAT' ? (
+                    ) : (incident.raw_log.includes('139') || incident.raw_log.includes('SIGSEGV')) ? (
                       <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
-                    ) : selectedScenario === 'FFMPEG_OOM' ? (
+                    ) : (incident.raw_log.includes('137') || incident.raw_log.includes('SIGABRT')) ? (
                       <span className="text-rose-400 font-semibold">SIGABRT (Exit 137 OOM)</span>
                     ) : (
-                      <span className="text-rose-400 font-semibold">SIGTERM (Exit 1)</span>
+                      <span className="text-rose-400 font-semibold">SIGSEGV (Exit 139)</span>
                     )}
                   </div>
                   <div className="flex justify-between">

@@ -47,11 +47,14 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
 
   const getStageIndex = (currStatus: string) => {
     switch (currStatus) {
+      case 'INITIALIZING':
       case 'ANALYZING': return 0;
       case 'TRIAGED': return 1;
       case 'BLAST_ASSESSED': return 2;
-      case 'SANDBOXED': return 3;
+      case 'SANDBOXED':
+      case 'SANDBOX_TESTED': return 3;
       case 'NEEDS_APPROVAL': return 4;
+      case 'DEPLOYING':
       case 'RESOLVED': return 5;
       default: return -1;
     }
