@@ -6,7 +6,7 @@
 
 import pino from 'pino';
 
-export type PipelineStage = '[INGEST]' | '[FFMPEG_ENCODE]' | '[MUXER]' | '[S3_UPLOAD]' | '[CHAOS]' | '[SYSTEM]';
+export type PipelineStage = '[INGEST]' | '[FFMPEG_ENCODE]' | '[MUXER]' | '[S3_UPLOAD]' | '[CHAOS]' | '[SYSTEM]' | '[WEBHOOK]';
 export type LogLevel = 'info' | 'warn' | 'error' | 'fatal';
 
 export interface LogEntry {

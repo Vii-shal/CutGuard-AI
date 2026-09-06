@@ -51,6 +51,7 @@ app.get('/', (req: Request, res: Response) => {
         chaosInject: `POST /api/chaos/inject`,
         chaosReset: `POST /api/chaos/reset`,
         chaosStatus: `GET /api/chaos/status`,
+        openapiSpec: `GET /openapi.json`,
         enterpriseRCA: `GET /api/enterprise/rca/:incidentId`,
         patchApply: `POST /api/patch/apply`
       },
