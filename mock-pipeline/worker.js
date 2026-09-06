@@ -29,14 +29,10 @@ function processVideoChunk(chunk) {
   const codec = chunk.codec || 'h264';
   const duration = chunk.videoLengthSec || 10;
 
-  // CRITICAL FAILURE POINT:
-  // In production, when client manifests omit bitrateProfile, this throws SIGABRT OOM
-  if (!chunk.bitrateProfile) {
-    throw new Error("CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)");
-  }
-
-  const targetBitrate = chunk.bitrateProfile.targetBitrate;
-  const resolution = chunk.bitrateProfile.resolution || '1280x720';
+  // Fallback to 720p_auto profile when bitrateProfile is omitted
+  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || { targetBitrate: '4500k', resolution: '1280x720' };
+  const targetBitrate = profile.targetBitrate;
+  const resolution = profile.resolution || '1280x720';
 
   return {
     status: 'completed',
