@@ -91,6 +91,8 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
     """
     config = {"configurable": {"thread_id": incident_id}}
     INCIDENTS_DB[incident_id]["status"] = "ANALYZING"
+    INCIDENTS_DB[incident_id]["lifecycle_state"] = "ANALYZING"
+    INCIDENTS_DB[incident_id]["active_node"] = "telemetry_ingest"
     await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
     try:
@@ -102,16 +104,31 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
                     INCIDENTS_DB[incident_id].update(node_output)
                 if node_name == "triage":
                     INCIDENTS_DB[incident_id]["status"] = "TRIAGED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "TRIAGED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "gemini_triage"
                 elif node_name == "blast_radius":
                     INCIDENTS_DB[incident_id]["status"] = "BLAST_ASSESSED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "BLAST_ASSESSED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "blast_radius_ast"
                 elif node_name == "sandbox_patch":
                     INCIDENTS_DB[incident_id]["status"] = "SANDBOXED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "SANDBOXED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "sandbox_patch"
                 elif node_name == "deploy":
                     INCIDENTS_DB[incident_id]["status"] = "RESOLVED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "RESOLVED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "production_deploy"
                 elif node_name == "escalate":
                     INCIDENTS_DB[incident_id]["status"] = "ESCALATED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "ESCALATED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "escalate"
                 elif node_name == "__interrupt__":
                     INCIDENTS_DB[incident_id]["status"] = "NEEDS_APPROVAL"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "NEEDS_APPROVAL"
+                    INCIDENTS_DB[incident_id]["active_node"] = "human_approval_gate"
+                else:
+                    INCIDENTS_DB[incident_id]["active_node"] = node_name
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = INCIDENTS_DB[incident_id].get("status", "IN_PROGRESS")
 
                 await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
@@ -122,14 +139,18 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
                 if task.interrupts:
                     print(f"[Agent][{incident_id}] Graph halted at interrupt. Awaiting approval.")
                     INCIDENTS_DB[incident_id]["status"] = "NEEDS_APPROVAL"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "NEEDS_APPROVAL"
+                    INCIDENTS_DB[incident_id]["active_node"] = "human_approval_gate"
                     INCIDENTS_DB[incident_id]["interrupt_payload"] = task.interrupts[0].value
                     await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
                     return
 
     except Exception as e:
         print(f"[Agent Error][{incident_id}] {e}")
-        INCIDENTS_DB[incident_id]["status"] = "ERROR"
-        INCIDENTS_DB[incident_id]["error_message"] = str(e)
+        INCIDENTS_DB[incident_id]["status"] = "ESCALATED"
+        INCIDENTS_DB[incident_id]["lifecycle_state"] = "ESCALATED"
+        INCIDENTS_DB[incident_id]["active_node"] = "escalate"
+        INCIDENTS_DB[incident_id]["error_message"] = f"Execution Exception: {str(e)}"
         await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
 
@@ -180,7 +201,10 @@ async def trigger_incident(req: TriggerRequest, background_tasks: BackgroundTask
         "created_at": datetime.now(timezone.utc).isoformat(),
         "pr_url": None,
         "pr_number": None,
-        "pr_branch": None
+        "pr_branch": None,
+        "active_node": "telemetry_ingest",
+        "lifecycle_state": "INITIALIZING",
+        "error_message": None
     }
 
     INCIDENTS_DB[incident_id] = initial_record
@@ -227,11 +251,17 @@ async def resume_incident(incident_id: str, req: ResumeRequest, background_tasks
         # Even if not paused in state, update record directly
         INCIDENTS_DB[incident_id]["human_approved"] = is_approved
         INCIDENTS_DB[incident_id]["status"] = "RESOLVED" if is_approved else "ESCALATED"
+        INCIDENTS_DB[incident_id]["lifecycle_state"] = "RESOLVED" if is_approved else "ESCALATED"
+        INCIDENTS_DB[incident_id]["active_node"] = "production_deploy" if is_approved else "escalate"
+        if not is_approved and not INCIDENTS_DB[incident_id].get("error_message"):
+            INCIDENTS_DB[incident_id]["error_message"] = "Manual SRE Rejection: Operator rejected candidate patch during human gate sign-off."
         await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
         return INCIDENTS_DB[incident_id]
 
     async def _resume():
         INCIDENTS_DB[incident_id]["status"] = "DEPLOYING" if is_approved else "REJECTING"
+        INCIDENTS_DB[incident_id]["lifecycle_state"] = "DEPLOYING" if is_approved else "REJECTING"
+        INCIDENTS_DB[incident_id]["active_node"] = "production_deploy" if is_approved else "escalate"
         await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
         resume_payload = {"approved": is_approved, "action": "approve" if is_approved else "reject", "approver": req.approver}
@@ -244,8 +274,15 @@ async def resume_incident(incident_id: str, req: ResumeRequest, background_tasks
                     INCIDENTS_DB[incident_id].update(node_output)
                 if node_name == "deploy":
                     INCIDENTS_DB[incident_id]["status"] = "RESOLVED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "RESOLVED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "production_deploy"
                 elif node_name == "escalate":
                     INCIDENTS_DB[incident_id]["status"] = "ESCALATED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "ESCALATED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "escalate"
+                else:
+                    INCIDENTS_DB[incident_id]["active_node"] = node_name
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = INCIDENTS_DB[incident_id].get("status", "IN_PROGRESS")
                 await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
 
     background_tasks.add_task(_resume)

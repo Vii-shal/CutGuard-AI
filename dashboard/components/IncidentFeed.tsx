@@ -14,7 +14,8 @@ import {
   FileCode,
   ShieldAlert
 } from 'lucide-react';
-import { IncidentStatus, CONFIG } from '../types';
+import { IncidentStatus, Incident, CONFIG } from '../types';
+import { ActiveStepActivity } from './ActiveStepActivity';
 
 interface IncidentFeedProps {
   incidentId: string;
@@ -24,6 +25,8 @@ interface IncidentFeedProps {
   createdAt?: string;
   culpritFile?: string;
   blastScore?: number;
+  incident?: Incident | null;
+  children?: React.ReactNode;
 }
 
 const STAGES = [
@@ -42,7 +45,9 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
   rawLog = '',
   createdAt = new Date().toISOString(),
   culpritFile = CONFIG.DEFAULT_CULPRIT_FILE,
-  blastScore = 0
+  blastScore = 0,
+  incident,
+  children
 }) => {
   const [showLog, setShowLog] = React.useState(true);
 
@@ -150,6 +155,9 @@ export const IncidentFeed: React.FC<IncidentFeedProps> = ({
           );
         })}
       </div>
+
+      {/* Transparent Active Step Activity Feed */}
+      {children !== undefined ? children : (incident !== undefined ? <ActiveStepActivity incident={incident} /> : null)}
 
       {/* Raw Grafana Log Expandable Viewer */}
       <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/80">

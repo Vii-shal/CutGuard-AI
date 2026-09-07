@@ -63,6 +63,8 @@ class IncidentState(TypedDict, total=False):
     pr_url: Optional[str]
     pr_number: Optional[int]
     pr_branch: Optional[str]
+    active_node: Optional[str]
+    lifecycle_state: Optional[str]
 
 
 LAST_GEMINI_ERROR = None
@@ -248,6 +250,8 @@ async def triage_node(state: IncidentState) -> Dict[str, Any]:
         "culprit_file": culprit_file,
         "culprit_commit": state.get("culprit_commit", "HEAD~1"),
         "status": "TRIAGED",
+        "lifecycle_state": "TRIAGED",
+        "active_node": "gemini_triage",
         "retry_count": state.get("retry_count", 0)
     }
 
@@ -268,7 +272,9 @@ def blast_radius_node(state: IncidentState) -> Dict[str, Any]:
     return {
         "blast_score": blast_result["blast_score"],
         "blast_details": blast_result,
-        "status": "BLAST_ASSESSED"
+        "status": "BLAST_ASSESSED",
+        "lifecycle_state": "BLAST_ASSESSED",
+        "active_node": "blast_radius_ast"
     }
 
 
@@ -436,7 +442,9 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
         "test_passed": test_passed,
         "test_output": test_output.strip(),
         "retry_count": retry_count + 1,
-        "status": "SANDBOX_TESTED"
+        "status": "SANDBOX_TESTED",
+        "lifecycle_state": "SANDBOXED",
+        "active_node": "sandbox_patch"
     }
 
 
@@ -502,7 +510,9 @@ def human_approval_gate_node(state: IncidentState) -> Dict[str, Any]:
 
     return {
         "human_approved": approved,
-        "status": "APPROVED" if approved else "REJECTED"
+        "status": "APPROVED" if approved else "REJECTED",
+        "lifecycle_state": "NEEDS_APPROVAL",
+        "active_node": "human_approval_gate"
     }
 
 
@@ -647,7 +657,9 @@ CutGuard AI autonomously ingested telemetry, resolved the failing file (`{culpri
         "pr_url": pr_url,
         "pr_number": pr_number,
         "pr_branch": pr_branch,
-        "status": "RESOLVED"
+        "status": "RESOLVED",
+        "lifecycle_state": "RESOLVED",
+        "active_node": "production_deploy"
     }
 
 
@@ -660,11 +672,27 @@ def escalate_node(state: IncidentState) -> Dict[str, Any]:
     Escalates to on-call engineers with diagnostics.
     """
     print(f"\n[ESCALATE NODE] Incident {state.get('incident_id')} escalated to on-call Staff SRE.")
-    rejection_reason = "Manual SRE Rejection" if state.get("human_approved") is False else "Sandbox Retries Exhausted"
+    is_rejected = state.get("human_approved") is False
+    
+    if is_rejected:
+        err_context = "Manual SRE Rejection: Operator rejected candidate patch during human gate sign-off."
+    else:
+        test_out = state.get("test_output", "").strip()
+        state_err = state.get("error_message", "").strip()
+        if state_err:
+            err_context = state_err
+        elif test_out:
+            # Capture specific failure context (Jest syntax errors, timeouts, rate limits, missing diff markers)
+            first_lines = "\n".join([line for line in test_out.splitlines() if line.strip()][:3])
+            err_context = f"Sandbox Retries Exhausted: {first_lines}"
+        else:
+            err_context = "Sandbox Retries Exhausted: Validation failed or test assertions rejected candidate diff."
 
     return {
         "status": "ESCALATED",
-        "error_message": f"Remediation escalated: {rejection_reason}. Requires manual engineering triage."
+        "lifecycle_state": "ESCALATED",
+        "active_node": "escalate",
+        "error_message": err_context
     }
 
 

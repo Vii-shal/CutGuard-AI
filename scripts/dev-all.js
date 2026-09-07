@@ -123,7 +123,7 @@ function startService(svc) {
       cwd: svc.cwd,
       env: { ...process.env, FORCE_COLOR: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
+      shell: process.platform === 'win32',
     });
 
     svc.proc = child;

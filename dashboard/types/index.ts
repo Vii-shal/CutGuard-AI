@@ -73,6 +73,9 @@ export interface Incident {
   pr_url?: string | null;
   pr_number?: number | null;
   pr_branch?: string | null;
+  active_node?: string | null;
+  lifecycle_state?: string | null;
+  error_message?: string | null;
 }
 
 export interface ChaosIncidentTelemetry {

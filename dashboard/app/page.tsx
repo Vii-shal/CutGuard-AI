@@ -8,6 +8,7 @@ import { DiffViewer } from '../components/DiffViewer';
 import { SandboxLogs } from '../components/SandboxLogs';
 import { HumanApprovalBar } from '../components/HumanApprovalBar';
 import { PostMortemModal } from '../components/PostMortemModal';
+import { ActiveStepActivity } from '../components/ActiveStepActivity';
 import { 
   Activity, 
   Cpu, 
@@ -19,7 +20,10 @@ import {
   Server,
   Layers,
   ShieldCheck,
-  GitPullRequest
+  GitPullRequest,
+  AlertOctagon,
+  Loader2,
+  Terminal
 } from 'lucide-react';
 
 // ==========================================
@@ -100,6 +104,35 @@ export default function IncidentControlCenter() {
 
   // Derived current status for UI rendering and state-machine gating
   const activeStatus: IncidentStatus = incident?.status || 'IDLE';
+  const isEscalated = activeStatus === 'ESCALATED';
+  const isResolved = activeStatus === 'RESOLVED';
+
+  const getNodeConfig = (status: IncidentStatus) => {
+    switch (status) {
+      case 'INITIALIZING':
+        return { label: 'Initializing SRE Agent', action: 'Spawning LangGraph cyclic state machine and connecting to observability stream...' };
+      case 'ANALYZING':
+        return { label: 'Node 1: Grafana Loki MCP Ingestion', action: 'Querying Grafana Loki MCP for FFmpeg crash signatures and stack trace...' };
+      case 'TRIAGED':
+        return { label: 'Node 2: Gemini 2.5 Flash Triage', action: 'Decompiling stack frames and isolating culprit file & bug origin...' };
+      case 'BLAST_ASSESSED':
+        return { label: 'Node 3: AST Blast Radius Analysis', action: 'Computing AST dependency graph and downstream service blast score...' };
+      case 'SANDBOXED':
+      case 'SANDBOX_TESTED':
+        return { label: 'Node 4: Isolated Jest Sandbox', action: 'Executing test assertions in isolated sandbox to verify candidate patch...' };
+      case 'NEEDS_APPROVAL':
+        return { label: 'Node 5: Human-in-the-Loop Gate', action: 'Patch verified in sandbox. Paused awaiting operator authorization...' };
+      case 'DEPLOYING':
+        return { label: 'Node 6: Zero-Downtime Hot-Patch & GitOps', action: 'Applying hot-patch in memory (<50ms) and opening GitHub Pull Request...' };
+      case 'RESOLVED':
+        return { label: 'Remediation Complete', action: 'Transcoding worker patched in memory, verified in sandbox, and telemetry normalized.' };
+      case 'ESCALATED':
+        return { label: 'Incident Escalated', action: 'Automated self-healing halted. Transferred to on-call Staff SRE.' };
+      default:
+        return { label: status.replace('_', ' '), action: 'Autonomous remediation workflow executing...' };
+    }
+  };
+  const nodeConfig = getNodeConfig(activeStatus);
 
   // Controlled cleanup function to unconditionally halt all timers
   const clearPollTimer = useCallback(() => {
@@ -194,14 +227,20 @@ export default function IncidentControlCenter() {
             ...(prev || latestAgentInc!),
             ...latestAgentInc!,
             blast_details: latestAgentInc!.blast_details || prev?.blast_details || DEFAULT_BLAST_DETAILS,
-            post_mortem: latestAgentInc!.post_mortem || prev?.post_mortem || ''
+            post_mortem: latestAgentInc!.post_mortem || prev?.post_mortem || '',
+            active_node: latestAgentInc!.active_node || prev?.active_node,
+            lifecycle_state: latestAgentInc!.lifecycle_state || latestAgentInc!.status || prev?.lifecycle_state,
+            error_message: latestAgentInc!.error_message || prev?.error_message
           }));
         } else if (currentInc?.incident_id === latestAgentInc.incident_id) {
           setIncident(prev => ({
             ...(prev || latestAgentInc!),
             ...latestAgentInc!,
             blast_details: latestAgentInc!.blast_details || prev?.blast_details || DEFAULT_BLAST_DETAILS,
-            post_mortem: prev?.post_mortem || latestAgentInc!.post_mortem || ''
+            post_mortem: prev?.post_mortem || latestAgentInc!.post_mortem || '',
+            active_node: latestAgentInc!.active_node || prev?.active_node,
+            lifecycle_state: latestAgentInc!.lifecycle_state || latestAgentInc!.status || prev?.lifecycle_state,
+            error_message: latestAgentInc!.error_message || prev?.error_message
           }));
         }
       }
@@ -251,7 +290,10 @@ export default function IncidentControlCenter() {
             retry_count: 0,
             human_approved: null,
             post_mortem: '',
-            created_at: inc.timestamp || new Date().toISOString()
+            created_at: inc.timestamp || new Date().toISOString(),
+            active_node: 'telemetry_ingest',
+            lifecycle_state: 'ANALYZING',
+            error_message: null
           };
         });
       }
@@ -319,7 +361,10 @@ export default function IncidentControlCenter() {
                 ...(prev || inc),
                 ...inc,
                 blast_details: inc.blast_details || prev?.blast_details || {},
-                post_mortem: inc.post_mortem || prev?.post_mortem || ''
+                post_mortem: inc.post_mortem || prev?.post_mortem || '',
+                active_node: inc.active_node || prev?.active_node,
+                lifecycle_state: inc.lifecycle_state || inc.status || prev?.lifecycle_state,
+                error_message: inc.error_message || prev?.error_message
               }));
               // Instant re-fetch of cluster state when agent starts or updates
               fetchClusterState();
@@ -563,6 +608,8 @@ export default function IncidentControlCenter() {
       setIncident(prev => prev ? ({
         ...prev,
         status: 'RESOLVED',
+        lifecycle_state: 'RESOLVED',
+        active_node: 'production_deploy',
         human_approved: true,
         post_mortem: currentInc.post_mortem || prev.post_mortem
       }) : null);
@@ -612,11 +659,25 @@ export default function IncidentControlCenter() {
           approver: 'Lead Cinema SRE' 
         })
       });
-      setIncident(prev => prev ? ({ ...prev, status: 'ESCALATED', human_approved: false }) : null);
+      setIncident(prev => prev ? ({ 
+        ...prev, 
+        status: 'ESCALATED', 
+        lifecycle_state: 'ESCALATED',
+        active_node: 'escalate',
+        human_approved: false,
+        error_message: prev.error_message || 'Manual SRE Rejection: Operator rejected candidate patch during human gate sign-off.'
+      }) : null);
       await fetchSystemOverview();
     } catch (err) {
       console.warn('[Reject] Reject notification error:', err);
-      setIncident(prev => prev ? ({ ...prev, status: 'ESCALATED', human_approved: false }) : null);
+      setIncident(prev => prev ? ({ 
+        ...prev, 
+        status: 'ESCALATED', 
+        lifecycle_state: 'ESCALATED',
+        active_node: 'escalate',
+        human_approved: false,
+        error_message: prev.error_message || 'Manual SRE Rejection: Operator rejected candidate patch during human gate sign-off.'
+      }) : null);
     } finally {
       setIsProcessingApproval(false);
     }
@@ -675,7 +736,11 @@ export default function IncidentControlCenter() {
           createdAt={incident?.created_at || ''}
           culpritFile={incident?.culprit_file || CONFIG.DEFAULT_CULPRIT_FILE}
           blastScore={incident?.blast_score || 0}
-        />
+          incident={incident}
+        >
+          {/* Active Step Activity Feed: Real-time execution state, LangGraph active node, & failure diagnostics */}
+          <ActiveStepActivity incident={incident} />
+        </IncidentFeed>
 
         {/* Human-in-the-Loop Approval Decision Bar */}
         <HumanApprovalBar
@@ -691,8 +756,8 @@ export default function IncidentControlCenter() {
         {/* Resolved Banner Action */}
         {activeStatus === 'RESOLVED' && (
           <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" />
               <div>
                 <div className="flex items-center space-x-2">
                   <span className="text-xs font-bold text-white uppercase tracking-wider">
@@ -741,8 +806,8 @@ export default function IncidentControlCenter() {
         {/* Escalated Banner Action */}
         {activeStatus === 'ESCALATED' && (
           <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <AlertCircle className="w-5 h-5 text-rose-400" />
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-rose-400 mt-0.5 shrink-0" />
               <div>
                 <span className="text-xs font-bold text-white uppercase tracking-wider">
                   Incident Escalated
