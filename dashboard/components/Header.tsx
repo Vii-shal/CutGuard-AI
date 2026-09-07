@@ -21,7 +21,8 @@ export const Header: React.FC<HeaderProps> = ({
   isSimulating,
   selectedScenario
 }) => {
-  const isNominal = activeStatus === 'IDLE' || activeStatus === 'RESOLVED';
+  const isSyncing = activeStatus === 'SYNCING' || activeStatus === 'INITIALIZING';
+  const isNominal = (activeStatus === 'IDLE' || activeStatus === 'RESOLVED') && !isSyncing;
   const needsApproval = activeStatus === 'NEEDS_APPROVAL';
 
   return (
@@ -78,17 +79,19 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Right: Passive Status Indicator & Link to Transcoder Player */}
         <div className="flex items-center space-x-3">
           <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg border text-xs font-mono font-bold transition-all ${
-            isNominal
+            isSyncing
+              ? 'bg-cyan-950/60 border-cyan-500/40 text-cyan-300'
+              : isNominal
               ? 'bg-emerald-950/50 border-emerald-500/30 text-emerald-300'
               : needsApproval
               ? 'bg-amber-950/60 border-amber-500/40 text-amber-300 animate-pulse'
               : 'bg-rose-950/60 border-rose-500/40 text-rose-300 animate-pulse'
           }`}>
             <span className={`w-2 h-2 rounded-full ${
-              isNominal ? 'bg-emerald-400 animate-pulse' : needsApproval ? 'bg-amber-400 animate-ping' : 'bg-rose-400 animate-ping'
+              isSyncing ? 'bg-cyan-400 animate-ping' : isNominal ? 'bg-emerald-400 animate-pulse' : needsApproval ? 'bg-amber-400 animate-ping' : 'bg-rose-400 animate-ping'
             }`} />
             <span>
-              {activeStatus === 'IDLE' ? 'PASSIVE OBSERVABILITY: ARMED' : activeStatus.replace('_', ' ')}
+              {isSyncing ? 'SYNCING TELEMETRY...' : activeStatus === 'IDLE' ? 'PASSIVE OBSERVABILITY: ARMED' : activeStatus.replace('_', ' ')}
             </span>
           </div>
 

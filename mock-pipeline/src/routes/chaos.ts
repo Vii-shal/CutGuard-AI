@@ -36,12 +36,66 @@ export function getActiveIncident(): IncidentState | null {
   return activeIncident;
 }
 
+const sseClients: Response[] = [];
+
+export function broadcastChaosSSE(): void {
+  const payload = JSON.stringify({
+    event: 'chaos_status',
+    isCrashed: activeScenario !== 'NONE',
+    scenario: activeScenario,
+    activeIncident,
+    timestamp: new Date().toISOString()
+  });
+
+  for (let i = sseClients.length - 1; i >= 0; i--) {
+    const client = sseClients[i];
+    try {
+      client.write(`data: ${payload}\n\n`);
+    } catch {
+      sseClients.splice(i, 1);
+    }
+  }
+}
+
 export function resetChaosState(): void {
   activeScenario = 'NONE';
   activeIncident = null;
+  broadcastChaosSSE();
 }
 
 export const chaosRouter = Router();
+
+/**
+ * @openapi
+ * /api/chaos/events:
+ *   get:
+ *     summary: Real-Time Chaos Server-Sent Events (SSE) Stream
+ *     description: Streams real-time pipeline crash and recovery events to listening dashboards with zero polling latency.
+ *     tags: [Chaos Engineering]
+ */
+chaosRouter.get('/events', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Send current state immediately upon connecting
+  res.write(`data: ${JSON.stringify({
+    event: 'chaos_status',
+    isCrashed: activeScenario !== 'NONE',
+    scenario: activeScenario,
+    activeIncident,
+    timestamp: new Date().toISOString()
+  })}\n\n`);
+
+  sseClients.push(res);
+
+  _req.on('close', () => {
+    const idx = sseClients.indexOf(res);
+    if (idx !== -1) sseClients.splice(idx, 1);
+  });
+});
 
 /**
  * @openapi
@@ -233,6 +287,8 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.warn(`[Chaos] Telemetry webhook to SRE Agent (:8000) notice: ${err?.message || err}`);
   }
+
+  broadcastChaosSSE();
 
   return res.json({
     status: 'CHAOS_INJECTED',

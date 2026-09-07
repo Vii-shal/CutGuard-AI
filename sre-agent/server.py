@@ -42,6 +42,7 @@ app.add_middleware(
 # In-memory store for active incidents and thread IDs
 INCIDENTS_DB: Dict[str, Dict[str, Any]] = {}
 ACTIVE_WEBSOCKETS: Dict[str, List[WebSocket]] = {}
+GLOBAL_WEBSOCKETS: List[WebSocket] = []
 
 
 class TriggerRequest(BaseModel):
@@ -63,6 +64,7 @@ class ResumeRequest(BaseModel):
 
 async def broadcast_incident_update(incident_id: str, data: Dict[str, Any]):
     """Pushes live state updates to all subscribed WebSocket clients."""
+    # 1. Broadcast to specific incident subscribers
     if incident_id in ACTIVE_WEBSOCKETS:
         dead_connections = []
         for ws in ACTIVE_WEBSOCKETS[incident_id]:
@@ -72,6 +74,16 @@ async def broadcast_incident_update(incident_id: str, data: Dict[str, Any]):
                 dead_connections.append(ws)
         for dead in dead_connections:
             ACTIVE_WEBSOCKETS[incident_id].remove(dead)
+
+    # 2. Broadcast to global live dashboard subscribers
+    dead_globals = []
+    for ws in GLOBAL_WEBSOCKETS:
+        try:
+            await ws.send_json({"event": "incident_update", "incident": data})
+        except Exception:
+            dead_globals.append(ws)
+    for dead in dead_globals:
+        GLOBAL_WEBSOCKETS.remove(dead)
 
 
 async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]):
@@ -162,6 +174,9 @@ async def trigger_incident(req: TriggerRequest, background_tasks: BackgroundTask
     }
 
     INCIDENTS_DB[incident_id] = initial_record
+
+    # Broadcast immediately to all connected dashboards that an agent has started!
+    await broadcast_incident_update(incident_id, initial_record)
 
     # Launch LangGraph in background task
     background_tasks.add_task(
@@ -254,7 +269,39 @@ async def get_latest_incident():
 async def clear_incidents():
     """Clears all in-memory incident records to return cluster monitoring to nominal."""
     INCIDENTS_DB.clear()
+    dead_globals = []
+    for ws in GLOBAL_WEBSOCKETS:
+        try:
+            await ws.send_json({"event": "incidents_cleared"})
+        except Exception:
+            dead_globals.append(ws)
+    for dead in dead_globals:
+        GLOBAL_WEBSOCKETS.remove(dead)
     return {"status": "CLEARED", "message": "All incident records cleared."}
+
+
+@app.websocket("/ws/live")
+async def websocket_live_endpoint(websocket: WebSocket):
+    """Global real-time incident event stream for CutGuard dashboards."""
+    await websocket.accept()
+    if websocket not in GLOBAL_WEBSOCKETS:
+        GLOBAL_WEBSOCKETS.append(websocket)
+
+    # Immediately push current incident state upon connecting
+    if INCIDENTS_DB:
+        incidents_list = list(INCIDENTS_DB.values())
+        incidents_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        try:
+            await websocket.send_json({"event": "incident_state", "incident": incidents_list[0]})
+        except Exception:
+            pass
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        if websocket in GLOBAL_WEBSOCKETS:
+            GLOBAL_WEBSOCKETS.remove(websocket)
 
 
 @app.websocket("/ws/{incident_id}")

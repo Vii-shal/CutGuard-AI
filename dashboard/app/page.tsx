@@ -28,6 +28,7 @@ import {
 export type IncidentStatus = 
   | 'IDLE'
   | 'INITIALIZING'
+  | 'SYNCING'
   | 'ANALYZING'
   | 'TRIAGING'
   | 'TRIAGED'
@@ -128,8 +129,8 @@ export interface WorkerHealthResponse {
 }
 
 // Controlled Polling Intervals
-const NOMINAL_POLL_INTERVAL_MS = 4000;
-const ACTIVE_POLL_INTERVAL_MS = 1200;
+const NOMINAL_POLL_INTERVAL_MS = 2500;
+const ACTIVE_POLL_INTERVAL_MS = 1000;
 
 // Infrastructure Endpoints
 const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_URL || 'http://localhost:4001';
@@ -139,6 +140,9 @@ export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
   const [isProcessingApproval, setIsProcessingApproval] = useState<boolean>(false);
   const [isPostMortemOpen, setIsPostMortemOpen] = useState<boolean>(false);
+
+  // Synchronized initial load state to eliminate the nominal screen flash on refresh
+  const [isInitialSyncDone, setIsInitialSyncDone] = useState<boolean>(false);
 
   // Live Infrastructure Connectivity Badges
   const [pipelineOnline, setPipelineOnline] = useState<boolean>(false);
@@ -332,7 +336,157 @@ export default function IncidentControlCenter() {
   }, [fetchClusterState, fetchIncidentState]);
 
   // =========================================================================
-  // Baseline Infrastructure Heartbeat (4000ms)
+  // Initial Mount: Instant Out-of-Band Sync (0ms delay)
+  // Eliminates the flash of nominal screen by querying endpoints immediately
+  // before completing initial synchronization.
+  // =========================================================================
+  useEffect(() => {
+    let isMounted = true;
+    const initSync = async () => {
+      try {
+        await fetchSystemOverview();
+      } finally {
+        if (isMounted) {
+          setIsInitialSyncDone(true);
+        }
+      }
+    };
+    initSync();
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchSystemOverview]);
+
+  // =========================================================================
+  // Real-Time Event-Driven Sync: SRE Agent WebSocket Stream (/ws/live)
+  // Re-fetches and pushes state immediately whenever an agent starts or updates
+  // =========================================================================
+  useEffect(() => {
+    let isMounted = true;
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+
+    const connectAgentWebSocket = () => {
+      if (!isMounted) return;
+      try {
+        const wsUrl = AGENT_URL.replace(/^http/, 'ws') + '/ws/live';
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          if (!isMounted) return;
+          setAgentOnline(true);
+        };
+
+        ws.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'incidents_cleared') {
+              setIncident(null);
+              setIsClusterDegraded(false);
+              fetchClusterState();
+            } else if (data.incident) {
+              const inc: Incident = data.incident;
+              setIncident(prev => ({
+                ...(prev || inc),
+                ...inc,
+                blast_details: inc.blast_details || prev?.blast_details || {},
+                post_mortem: inc.post_mortem || prev?.post_mortem || ''
+              }));
+              // Instant re-fetch of cluster state when agent starts or updates
+              fetchClusterState();
+            }
+          } catch (err) {
+            console.warn('[Agent WebSocket] Message error:', err);
+          }
+        };
+
+        ws.onclose = () => {
+          if (!isMounted) return;
+          reconnectTimeout = setTimeout(connectAgentWebSocket, 2000);
+        };
+
+        ws.onerror = () => {
+          if (ws) ws.close();
+        };
+      } catch (err) {
+        console.warn('[Agent WebSocket] Connection failed:', err);
+        if (isMounted) {
+          reconnectTimeout = setTimeout(connectAgentWebSocket, 2000);
+        }
+      }
+    };
+
+    connectAgentWebSocket();
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
+  }, [AGENT_URL, fetchClusterState]);
+
+  // =========================================================================
+  // Real-Time Event-Driven Sync: Media Pipeline SSE Stream (/api/chaos/events)
+  // Re-fetches immediately whenever corrupt code or failure is detected
+  // =========================================================================
+  useEffect(() => {
+    let isMounted = true;
+    let es: EventSource | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+
+    const connectPipelineSSE = () => {
+      if (!isMounted) return;
+      try {
+        es = new EventSource(`${PIPELINE_URL}/api/chaos/events`);
+
+        es.onopen = () => {
+          if (!isMounted) return;
+          setPipelineOnline(true);
+        };
+
+        es.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            const isDegraded = Boolean(data.isCrashed || (data.scenario && data.scenario !== 'NONE'));
+            setIsClusterDegraded(isDegraded);
+
+            // Immediately re-fetch cluster state and incident state on corrupt code detection or reset
+            fetchSystemOverview();
+          } catch (err) {
+            console.warn('[Pipeline SSE] Event parse error:', err);
+          }
+        };
+
+        es.onerror = () => {
+          if (es) {
+            es.close();
+            es = null;
+          }
+          if (isMounted) {
+            reconnectTimeout = setTimeout(connectPipelineSSE, 2000);
+          }
+        };
+      } catch (err) {
+        console.warn('[Pipeline SSE] Connection failed:', err);
+        if (isMounted) {
+          reconnectTimeout = setTimeout(connectPipelineSSE, 2000);
+        }
+      }
+    };
+
+    connectPipelineSSE();
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (es) es.close();
+    };
+  }, [PIPELINE_URL, fetchSystemOverview]);
+
+  // =========================================================================
+  // Baseline Infrastructure Heartbeat (2500ms)
   // Dedicated background health probe to ensure pipelineOnline, agentOnline,
   // and worker pool metrics continuously update even when paused at HITL gates.
   // =========================================================================
@@ -365,11 +519,11 @@ export default function IncidentControlCenter() {
 
   // =========================================================================
   // Requirement 4: Dynamic Polling Acceleration (Adaptive Polling Loop)
-  // - Nominal (incident === null && !isClusterDegraded): 4000ms cadence
-  // - Active / Degraded (isClusterDegraded || status in active triage): 1200ms cadence
+  // - Nominal (incident === null && !isClusterDegraded): 2500ms cadence
+  // - Active / Degraded (isClusterDegraded || status in active triage): 1000ms cadence
   //   + immediate out-of-band fetch on trigger
   // - HITL Gate (NEEDS_APPROVAL / WAITING_FOR_HUMAN): Halt fast incident loop, 
-  //   maintain 4000ms heartbeat
+  //   maintain heartbeat
   // =========================================================================
   useEffect(() => {
     clearPollTimer();
@@ -386,7 +540,7 @@ export default function IncidentControlCenter() {
 
     let isCancelled = false;
 
-    // Determine poll interval: 1200ms when active triage or cluster degraded; 4000ms when nominal
+    // Determine poll interval: 1000ms when active triage or cluster degraded; 2500ms when nominal
     const isAccelerated = isClusterDegraded || (
       activeStatus !== 'IDLE' &&
       activeStatus !== 'RESOLVED' &&
@@ -417,12 +571,8 @@ export default function IncidentControlCenter() {
       }
     };
 
-    // Trigger immediate out-of-band fetch if accelerated, else schedule next interval
-    if (isAccelerated) {
-      runAdaptivePoll();
-    } else {
-      pollTimerRef.current = setTimeout(runAdaptivePoll, pollInterval);
-    }
+    // Always trigger immediate fetch on effect invocation without waiting for timer
+    runAdaptivePoll();
 
     return () => {
       isCancelled = true;
@@ -583,6 +733,29 @@ export default function IncidentControlCenter() {
       setIsProcessingApproval(false);
     }
   };
+
+  // Synchronized telemetry loading state: Prevents flashing the nominal screen on page refresh
+  if (!isInitialSyncDone) {
+    return (
+      <div className="min-h-screen flex flex-col bg-[#030712] text-slate-100 font-sans">
+        <Header activeStatus="SYNCING" pipelineOnline={pipelineOnline} agentOnline={agentOnline} />
+        <main className="flex-1 max-w-7xl w-full mx-auto p-6 flex flex-col items-center justify-center space-y-4 min-h-[60vh]">
+          <div className="relative flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-600/30 to-indigo-600/30 border border-cyan-500/40 text-cyan-400 shadow-xl shadow-cyan-950/50">
+            <Activity className="w-7 h-7 animate-pulse" />
+          </div>
+          <div className="text-center space-y-1">
+            <div className="text-xs font-mono font-bold uppercase tracking-widest text-cyan-400 flex items-center justify-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping inline-block" />
+              <span>Syncing Mission Control Telemetry</span>
+            </div>
+            <p className="text-[11px] font-mono text-slate-400">
+              Ingesting cluster worker pods &amp; LangGraph SRE agent state...
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-[#030712] text-slate-100 font-sans">
