@@ -28,8 +28,9 @@ function processVideoChunk(chunk) {
 
   const codec = chunk.codec || 'h264';
   const duration = chunk.videoLengthSec || 10;
+
   const bitrateProfile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'];
-  const targetBitrate = bitrateProfile.targetBitrate || DEFAULT_PRESETS['720p_auto'].targetBitrate;
+  const targetBitrate = bitrateProfile.targetBitrate;
   const resolution = bitrateProfile.resolution || '1280x720';
 
   return {

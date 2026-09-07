@@ -9,6 +9,7 @@ Verifies the complete cycle:
 """
 
 import os
+import re
 import sys
 import asyncio
 from pathlib import Path
@@ -33,6 +34,19 @@ async def run_e2e_verification():
     print("=================================================================")
     print("       CUTGUARD AI — END-TO-END SRE AGENT VERIFICATION          ")
     print("=================================================================\n")
+
+    # Ensure test begins with unpatched bug for baseline verification
+    repo_root = Path(__file__).resolve().parent.parent
+    for candidate_file in [repo_root / "mock-pipeline" / "worker.js", Path(__file__).resolve().parent / "worker.js"]:
+        if candidate_file.exists():
+            content = candidate_file.read_text(encoding="utf-8")
+            if "DEFAULT_PRESETS['720p_auto']" in content:
+                buggy = re.sub(
+                    r"\s*(?:const\s+(?:bitrateProfile|profile)\s*=|\/\/ Fallback to 720p_auto profile)[\s\S]*?const resolution = [^\n]+;",
+                    "\n  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137\n  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n  const resolution = chunk.bitrateProfile.resolution || '1280x720';",
+                    content
+                )
+                candidate_file.write_text(buggy, encoding="utf-8")
 
     # Step 1: Confirm baseline test fails on unpatched worker.js
     print("[Step 1] Verifying baseline mock-pipeline failure...")

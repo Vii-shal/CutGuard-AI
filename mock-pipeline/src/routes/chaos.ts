@@ -156,7 +156,104 @@ chaosRouter.get('/events', (_req: Request, res: Response) => {
  *       400:
  *         description: Invalid or unsupported chaos scenario specified
  */
-chaosRouter.post('/inject', async (req: Request, res: Response) => {
+let isResetting = false;
+let resetLockTimestamp = 0;
+
+/**
+ * Restores worker.js from pristine worker.baseline.js and purges Node require cache.
+ * Bulletproof against Windows EBUSY file locks with retry loop.
+ */
+function restoreWorkerFromBaseline(): { success: boolean; error?: string } {
+  const candidateDirs = [
+    process.cwd(),
+    path.resolve(process.cwd(), 'mock-pipeline'),
+    path.resolve(__dirname, '..', '..'),
+    path.resolve(__dirname, '..')
+  ];
+
+  let baselinePath = '';
+  let targetPath = '';
+
+  for (const dir of candidateDirs) {
+    const candidateB = path.resolve(dir, 'worker.baseline.js');
+    if (fs.existsSync(candidateB)) {
+      baselinePath = candidateB;
+      break;
+    }
+  }
+
+  for (const dir of candidateDirs) {
+    const candidateW = path.resolve(dir, 'worker.js');
+    if (fs.existsSync(candidateW)) {
+      targetPath = candidateW;
+      break;
+    }
+  }
+
+  if (!baselinePath) {
+    // If worker.baseline.js not found, attempt to locate in directory of worker.js
+    if (targetPath) {
+      baselinePath = path.resolve(path.dirname(targetPath), 'worker.baseline.js');
+    }
+  }
+
+  if (!baselinePath || !fs.existsSync(baselinePath)) {
+    return { success: false, error: "worker.baseline.js not found on filesystem." };
+  }
+
+  if (!targetPath) {
+    targetPath = path.resolve(path.dirname(baselinePath), 'worker.js');
+  }
+
+  // 1. Invalidate Node require.cache BEFORE writing to prevent Windows EBUSY file locking
+  try {
+    Object.keys(require.cache).forEach(key => {
+      if (key.includes('worker.js') || key.includes('worker')) {
+        delete require.cache[key];
+      }
+    });
+  } catch (_e) {}
+
+  // 2. Synchronous copy with retry loop for Windows file lock resilience
+  const maxRetries = 3;
+  let copyErr: any = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const baselineContent = fs.readFileSync(baselinePath, 'utf-8');
+      fs.writeFileSync(targetPath, baselineContent, 'utf-8');
+      copyErr = null;
+      break;
+    } catch (err: any) {
+      copyErr = err;
+      if (attempt < maxRetries) {
+        // Synchronous spin-wait (40ms) before retry
+        const start = Date.now();
+        while (Date.now() - start < 40) {}
+      }
+    }
+  }
+
+  if (copyErr) {
+    return { success: false, error: copyErr?.message || String(copyErr) };
+  }
+
+  // 3. Purge require.cache again so runtime immediately picks up reverted module
+  try {
+    Object.keys(require.cache).forEach(key => {
+      if (key.includes('worker.js') || key.includes('worker')) {
+        delete require.cache[key];
+      }
+    });
+  } catch (_e) {}
+
+  return { success: true };
+}
+
+/**
+ * Reusable chaos injection handler supporting both /inject and /trigger
+ */
+async function handleChaosInject(req: Request, res: Response) {
   const reqBody = (req.body && typeof req.body === 'object') ? (req.body as ChaosInjectRequestBody) : {};
   const scenario: ChaosScenario = (reqBody.scenario as ChaosScenario) || (PIPELINE_CONFIG.DEFAULT_CHAOS_SCENARIO as ChaosScenario);
   const targetWorker: string = reqBody.targetWorker || PIPELINE_CONFIG.DEFAULT_TARGET_WORKER;
@@ -246,7 +343,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
     rawStderr: stderrLog
   };
 
-  // Requirement 2: Automatically emit structured error logs into the in-memory log buffer (/api/logs)
+  // Automatically emit structured error logs into the in-memory log buffer (/api/logs)
   logPipelineEvent({
     level: scenario === 'FFMPEG_OOM' ? 'fatal' : 'error',
     stage: scenario === 'SEGMENT_CORRUPTION' ? '[MUXER]' : '[FFMPEG_ENCODE]',
@@ -298,55 +395,90 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
     agentDispatched,
     activeIncident
   });
-});
+}
+
+/**
+ * @openapi
+ * /api/chaos/inject:
+ *   post:
+ *     summary: Trigger targeted chaos fault injection
+ *     tags: [Chaos Engineering]
+ */
+chaosRouter.post('/inject', handleChaosInject);
+
+/**
+ * @openapi
+ * /api/chaos/trigger:
+ *   post:
+ *     summary: Trigger targeted chaos fault injection (alias)
+ *     tags: [Chaos Engineering]
+ */
+chaosRouter.post('/trigger', handleChaosInject);
 
 /**
  * @openapi
  * /api/chaos/reset:
  *   post:
- *     summary: Reset chaos injection state
- *     description: Clears failure injection, restores worker pool health, and normalizes telemetry streams.
+ *     summary: Reset chaos injection state and revert worker to pristine baseline
+ *     description: Clears failure injection, restores worker pool health, and restores worker.js from worker.baseline.js.
  *     tags: [Chaos Engineering]
  *     responses:
  *       200:
- *         description: Pipeline restored to healthy state
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: HEALTHY
- *                 isCrashed:
- *                   type: boolean
- *                   example: false
- *                 activeScenario:
- *                   type: string
- *                   example: NONE
- *                 isFailureArmed:
- *                   type: boolean
- *                   example: false
- *                 message:
- *                   type: string
- *                   example: Pipeline restored to normal operating state.
+ *         description: Pipeline restored to healthy baseline
+ *       429:
+ *         description: Reset already in progress
  */
 chaosRouter.post('/reset', (_req: Request, res: Response) => {
-  resetChaosState();
-  logPipelineEvent({
-    level: 'info',
-    stage: '[CHAOS]',
-    message: 'Chaos simulation reset. Video pipeline normalized to healthy mode.'
-  });
+  // Concurrency lock guard: block overlapping calls (auto-expires after 3.5s)
+  if (isResetting && Date.now() - resetLockTimestamp < 3500) {
+    return res.status(429).json({
+      status: "LOCKED",
+      error: "RESET_IN_PROGRESS",
+      message: "A reset operation is currently executing. Please wait a moment."
+    });
+  }
 
-  return res.json({
-    status: 'HEALTHY',
-    isCrashed: false,
-    activeScenario: 'NONE',
-    isFailureArmed: false,
-    activeIncident: null,
-    message: 'Pipeline restored to normal operating state.'
-  });
+  isResetting = true;
+  resetLockTimestamp = Date.now();
+
+  try {
+    // 1. Revert worker.js to pristine baseline and purge require.cache
+    const restoreResult = restoreWorkerFromBaseline();
+
+    // 2. Reset global in-memory chaos state
+    resetChaosState();
+
+    // 3. Emit structured observability log
+    logPipelineEvent({
+      level: 'info',
+      stage: '[CHAOS]',
+      message: 'Chaos state reset. Baseline worker.js restored and cache purged.'
+    });
+
+    // 4. Broadcast normalized status to SSE subscribers
+    broadcastChaosSSE();
+
+    return res.json({
+      status: "RESET_COMPLETE",
+      pipelineStatus: "HEALTHY",
+      isCrashed: false,
+      activeScenario: "NONE",
+      isFailureArmed: false,
+      activeIncident: null,
+      message: "Worker reverted to clean baseline. Cluster nominal.",
+      workerRestored: restoreResult.success,
+      details: restoreResult.error || null
+    });
+  } catch (err: any) {
+    console.error(`[Chaos Reset Error] ${err?.message || err}`);
+    return res.status(500).json({
+      status: "ERROR",
+      error: "RESET_FAILED",
+      message: err?.message || "Failed to reset worker baseline."
+    });
+  } finally {
+    isResetting = false;
+  }
 });
 
 /**

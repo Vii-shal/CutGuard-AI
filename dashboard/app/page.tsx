@@ -69,6 +69,7 @@ export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
   const [isProcessingApproval, setIsProcessingApproval] = useState<boolean>(false);
   const [isPostMortemOpen, setIsPostMortemOpen] = useState<boolean>(false);
+  const [isResetting, setIsResetting] = useState<boolean>(false);
 
   // Synchronized initial load state to eliminate the nominal screen flash on refresh
   const [isInitialSyncDone, setIsInitialSyncDone] = useState<boolean>(false);
@@ -575,6 +576,9 @@ export default function IncidentControlCenter() {
 
   // Coordinated "Reset to Nominal" Handler
   const handleResetToNominal = async () => {
+    if (isResetting) return;
+    setIsResetting(true);
+
     // 1. Clear chaos on Port 4001 and incidents on Port 8000
     try {
       await Promise.allSettled([
@@ -583,13 +587,12 @@ export default function IncidentControlCenter() {
       ]);
     } catch (err) {
       console.warn('[Reset] Coordinated reset error:', err);
+    } finally {
+      setIsClusterDegraded(false);
+      setIncident(null);
+      await fetchSystemOverview();
+      setIsResetting(false);
     }
-
-    setIsClusterDegraded(false);
-    setIncident(null);
-
-    // Immediately trigger system overview fetch to reflect healthy worker pool
-    await fetchSystemOverview();
   };
 
   // Human-in-the-loop: Reject & Rollback
@@ -708,10 +711,11 @@ export default function IncidentControlCenter() {
               </button>
               <button
                 onClick={handleResetToNominal}
-                className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700"
+                disabled={isResetting}
+                className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700 disabled:opacity-50"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Reset to Nominal</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${isResetting ? 'animate-spin' : ''}`} />
+                <span>{isResetting ? 'Resetting...' : 'Reset to Nominal'}</span>
               </button>
             </div>
           </div>
@@ -733,10 +737,11 @@ export default function IncidentControlCenter() {
             </div>
             <button
               onClick={handleResetToNominal}
-              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700"
+              disabled={isResetting}
+              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700 disabled:opacity-50"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Reset to Nominal</span>
+              <RefreshCw className={`w-3.5 h-3.5 ${isResetting ? 'animate-spin' : ''}`} />
+              <span>{isResetting ? 'Resetting...' : 'Reset to Nominal'}</span>
             </button>
           </div>
         )}
