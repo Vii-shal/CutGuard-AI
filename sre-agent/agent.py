@@ -6,8 +6,11 @@ Grafana Loki MCP client, deterministic blast-radius AST analysis, and Jest sandb
 
 import os
 import re
+import sys
+import time
 import json
 import uuid
+import subprocess
 from typing import TypedDict, Optional, Dict, Any, Literal
 from pathlib import Path
 from datetime import datetime, timezone
@@ -339,26 +342,54 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                 "Do not include conversational prose or explanation outside the unified diff block."
             )
             last_model_error = None
-            model_names = [os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"), "gemini-flash-latest", "gemini-3.8-flash"]
+            candidate_models = [
+                os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"),
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-flash-latest",
+                "gemini-1.5-flash",
+                "gemini-3.8-flash"
+            ]
+            model_names = []
+            for m in candidate_models:
+                if m not in model_names:
+                    model_names.append(m)
+
             for m_name in model_names:
-                try:
-                    response = client.models.generate_content(
-                        model=m_name,
-                        contents=prompt
-                    )
-                    text = response.text.strip()
-                    # Extract diff block
-                    diff_match = re.search(r"(--- a/.*?\n\+\+\+ b/.*?\n@@ .*? @@.*)", text, re.DOTALL)
-                    if diff_match:
-                        generated_diff = diff_match.group(1).strip()
-                    elif "--- " in text and "+++ " in text:
-                        generated_diff = text.replace("```diff", "").replace("```", "").strip()
-                    if generated_diff:
-                        break
-                except Exception as model_err:
-                    last_model_error = str(model_err)
-                    print(f"[Sandbox Node] Model {m_name} notice: {model_err}")
-                    continue
+                for retry_attempt in range(2):
+                    try:
+                        response = client.models.generate_content(
+                            model=m_name,
+                            contents=prompt
+                        )
+                        text = response.text.strip()
+                        # Extract diff block
+                        diff_match = re.search(r"(--- a/.*?\n\+\+\+ b/.*?\n@@ .*? @@.*)", text, re.DOTALL)
+                        if diff_match:
+                            generated_diff = diff_match.group(1).strip()
+                        elif "--- " in text and "+++ " in text:
+                            generated_diff = text.replace("```diff", "").replace("```", "").strip()
+                        if generated_diff:
+                            break
+                    except Exception as model_err:
+                        last_model_error = str(model_err)
+                        err_str = str(model_err).lower()
+                        print(f"[Sandbox Node] Model {m_name} (attempt {retry_attempt + 1}) notice: {model_err}")
+                        if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
+                            wait_sec = 7.5
+                            delay_match = re.search(r"retry\s+(?:in|delay)\s*[:=]?\s*([0-9\.]+)", err_str)
+                            if delay_match:
+                                try:
+                                    wait_sec = float(delay_match.group(1)) + 1.0
+                                except Exception:
+                                    pass
+                            print(f"[Sandbox Node] Rate-limited on {m_name}. Backing off for {wait_sec:.1f}s before retry...")
+                            time.sleep(wait_sec)
+                            continue
+                        else:
+                            break
+                if generated_diff:
+                    break
         except Exception as e:
             last_model_error = str(e)
             print(f"[Sandbox Node] Gemini synthesis notice: {e}")
@@ -503,6 +534,26 @@ def deploy_node(state: IncidentState) -> Dict[str, Any]:
     )
 
     commit_sha = git_result.get("commit_sha", "a78ef3c")
+
+    # 2b. Push to remote Git repository if GITHUB_TOKEN or credentials exist
+    github_token = os.getenv("GITHUB_TOKEN", "").strip().strip("'\"")
+    if github_token:
+        try:
+            repo_remote = f"https://x-access-token:{github_token}@github.com/Vii-shal/CutGuard-AI.git"
+            proc_push = subprocess.run(
+                ["git", "push", repo_remote, "main"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=12,
+                shell=(sys.platform == "win32")
+            )
+            if proc_push.returncode == 0:
+                print(f"[DEPLOY NODE] Git push succeeded: commit {commit_sha} pushed to origin/main.")
+            else:
+                print(f"[DEPLOY NODE] Git push notice: {proc_push.stderr.strip()}")
+        except Exception as push_err:
+            print(f"[DEPLOY NODE] Git push exception: {push_err}")
 
     # 3. Compile Enterprise Markdown RCA Post-Mortem dynamically
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
