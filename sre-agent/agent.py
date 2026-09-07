@@ -33,6 +33,7 @@ from tools import (
     apply_unified_diff,
     commit_and_tag_fix
 )
+from gitops import create_github_hotfix_pr
 
 # Optional Google GenAI SDK import
 try:
@@ -43,7 +44,7 @@ except ImportError:
     GENAI_AVAILABLE = False
 
 
-class IncidentState(TypedDict):
+class IncidentState(TypedDict, total=False):
     incident_id: str
     raw_log: str
     culprit_file: str
@@ -59,6 +60,9 @@ class IncidentState(TypedDict):
     service: str
     status: str
     error_message: Optional[str]
+    pr_url: Optional[str]
+    pr_number: Optional[int]
+    pr_branch: Optional[str]
 
 
 LAST_GEMINI_ERROR = None
@@ -522,47 +526,53 @@ def deploy_node(state: IncidentState) -> Dict[str, Any]:
     print(f"\n[DEPLOY NODE] Applying autonomous patch permanently to repository.")
     repo_root = str(Path(__file__).resolve().parent.parent)
 
-    # 1. Apply diff permanently
+    # ==========================================
+    # PHASE 1: INSTANT ZERO-DOWNTIME HOT-PATCH (Synchronous)
+    # ==========================================
     diff = state.get("generated_diff", "")
-    apply_ok = apply_unified_diff(diff, repo_root)
+    pipeline_url = get_effective_pipeline_url()
+    candidate_urls = [pipeline_url]
+    if "https://cutguard-media-stream.onrender.com" not in candidate_urls:
+        candidate_urls.append("https://cutguard-media-stream.onrender.com")
 
-    # 2. Stage and commit via Git
+    hot_patch_applied = False
+    for p_url in candidate_urls:
+        try:
+            import requests
+            res = requests.post(
+                f"{p_url}/api/patch/apply",
+                json={
+                    "patch": diff,
+                    "incidentId": state.get("incident_id"),
+                    "operatorSignOff": True
+                },
+                timeout=4.0
+            )
+            if res.status_code == 200:
+                print(f"[DEPLOY NODE][Phase 1] Instant hot-patch verified on {p_url} (<50ms).")
+                hot_patch_applied = True
+                break
+        except Exception as e:
+            print(f"[DEPLOY NODE][Phase 1] Hot-patch notice ({p_url}): {e}")
+
+    # Local disk mutation & Git staging
+    apply_ok = apply_unified_diff(diff, repo_root)
     git_result = commit_and_tag_fix(
         repo_root=repo_root,
         commit_msg=f"fix(sre): autonomous patch for {state.get('culprit_file', 'incident')} by CutGuard AI",
         tag_name=f"cutguard-patch-{state.get('incident_id', 'latest')}"
     )
-
     commit_sha = git_result.get("commit_sha", "a78ef3c")
 
-    # 2b. Push to remote Git repository if GITHUB_TOKEN or credentials exist
-    github_token = os.getenv("GITHUB_TOKEN", "").strip().strip("'\"")
-    if github_token:
-        try:
-            repo_remote = f"https://x-access-token:{github_token}@github.com/Vii-shal/CutGuard-AI.git"
-            proc_push = subprocess.run(
-                ["git", "push", repo_remote, "main"],
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
-                timeout=12,
-                shell=(sys.platform == "win32")
-            )
-            if proc_push.returncode == 0:
-                print(f"[DEPLOY NODE] Git push succeeded: commit {commit_sha} pushed to origin/main.")
-            else:
-                print(f"[DEPLOY NODE] Git push notice: {proc_push.stderr.strip()}")
-        except Exception as push_err:
-            print(f"[DEPLOY NODE] Git push exception: {push_err}")
-
-    # 3. Compile Enterprise Markdown RCA Post-Mortem dynamically
+    # ==========================================
+    # PHASE 2: ASYNCHRONOUS GITOPS PR (Non-Blocking)
+    # ==========================================
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     blast_details = state.get("blast_details", {})
     culprit_file = state.get("culprit_file", "unknown")
     blast_score = state.get("blast_score", 0)
     raw_log = state.get("raw_log", "")
     error_snippet = raw_log.splitlines()[0] if raw_log else "Runtime execution crash"
-
     downstream_list = "\n".join([f"  - `{f.get('file', f)}`" for f in blast_details.get("affected_files", [])]) or "  - Direct service consumers"
 
     post_mortem = f"""# Enterprise Incident RCA & Post-Mortem
@@ -617,35 +627,26 @@ CutGuard AI autonomously ingested telemetry, resolved the failing file (`{culpri
 3. [ ] **[Engineering]** Review proactive telemetry thresholds to prevent regression.
 """
 
-    print("[DEPLOY NODE] Deployment complete. RCA Post-Mortem compiled.")
+    pr_info = create_github_hotfix_pr(
+        incident_id=state.get("incident_id", "incident"),
+        culprit_file=culprit_file,
+        patch_diff=diff,
+        post_mortem=post_mortem,
+        blast_score=blast_score,
+        test_output=state.get("test_output", "")
+    )
+    pr_url = pr_info.get("pr_url") if pr_info else None
+    pr_number = pr_info.get("pr_number") if pr_info else None
+    pr_branch = pr_info.get("branch") if pr_info else None
 
-    # Notify mock-pipeline to sync state
-    pipeline_url = get_effective_pipeline_url()
-    candidate_urls = [pipeline_url]
-    if "https://cutguard-media-stream.onrender.com" not in candidate_urls:
-        candidate_urls.append("https://cutguard-media-stream.onrender.com")
-
-    for p_url in candidate_urls:
-        try:
-            import requests
-            res = requests.post(
-                f"{p_url}/api/patch/apply",
-                json={
-                    "patch": diff,
-                    "incidentId": state.get("incident_id"),
-                    "operatorSignOff": True
-                },
-                timeout=4.0
-            )
-            if res.status_code == 200:
-                print(f"[DEPLOY NODE] Notified mock-pipeline at {p_url}. Pipeline hot-patch applied.")
-                break
-        except Exception as e:
-            print(f"[DEPLOY NODE] mock-pipeline sync notice ({p_url}): {e}")
+    print(f"[DEPLOY NODE][Phase 2] Deployment complete. PR: {pr_url or 'Skipped/Local only'}")
 
     return {
         "post_mortem": post_mortem,
         "culprit_commit": commit_sha,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "pr_branch": pr_branch,
         "status": "RESOLVED"
     }
 

@@ -23,6 +23,7 @@ load_dotenv()
 # Import LangGraph agent and types
 from langgraph.types import Command
 from agent import cutguard_agent, IncidentState, _get_gemini_client, GENAI_AVAILABLE, LAST_GEMINI_ERROR
+from gitops import close_github_hotfix_pr
 
 app = FastAPI(
     title="CutGuard AI - Autonomous SRE Agent API",
@@ -176,7 +177,10 @@ async def trigger_incident(req: TriggerRequest, background_tasks: BackgroundTask
         "retry_count": 0,
         "human_approved": None,
         "post_mortem": "",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "pr_url": None,
+        "pr_number": None,
+        "pr_branch": None
     }
 
     INCIDENTS_DB[incident_id] = initial_record
@@ -272,8 +276,16 @@ async def get_latest_incident():
 
 
 @app.post("/api/incidents/clear")
-async def clear_incidents():
+async def clear_incidents(background_tasks: BackgroundTasks):
     """Clears all in-memory incident records to return cluster monitoring to nominal."""
+    # Find any active PRs created during this session to close them cleanly in background
+    for inc_id, record in list(INCIDENTS_DB.items()):
+        pr_number = record.get("pr_number")
+        pr_branch = record.get("pr_branch")
+        if pr_number:
+            print(f"[CutGuard Reset] Scheduling PR #{pr_number} and branch {pr_branch} cleanup")
+            background_tasks.add_task(close_github_hotfix_pr, pr_number, pr_branch)
+
     INCIDENTS_DB.clear()
     dead_globals = []
     for ws in GLOBAL_WEBSOCKETS:

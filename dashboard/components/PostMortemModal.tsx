@@ -1,20 +1,24 @@
 'use client';
 
 import React from 'react';
-import { FileText, X, Download, CheckCircle2, Shield } from 'lucide-react';
+import { FileText, X, Download, CheckCircle2, Shield, GitPullRequest } from 'lucide-react';
 
 interface PostMortemModalProps {
   isOpen: boolean;
   onClose: () => void;
   postMortem: string;
   incidentId: string;
+  prUrl?: string | null;
+  prNumber?: number | null;
 }
 
 export const PostMortemModal: React.FC<PostMortemModalProps> = ({
   isOpen,
   onClose,
   postMortem,
-  incidentId
+  incidentId,
+  prUrl,
+  prNumber
 }) => {
   if (!isOpen) return null;
 
@@ -54,6 +58,17 @@ export const PostMortemModal: React.FC<PostMortemModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
+            {prUrl && (
+              <a
+                href={prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 hover:text-white text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-sm"
+              >
+                <GitPullRequest className="w-3.5 h-3.5" />
+                <span>View GitHub PR {prNumber ? `#${prNumber}` : ''} ↗</span>
+              </a>
+            )}
             <button
               onClick={handleDownload}
               className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors"

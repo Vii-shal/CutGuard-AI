@@ -70,6 +70,9 @@ export interface Incident {
   post_mortem: string;
   created_at: string;
   interrupt_payload?: unknown;
+  pr_url?: string | null;
+  pr_number?: number | null;
+  pr_branch?: string | null;
 }
 
 export interface ChaosIncidentTelemetry {
@@ -164,7 +167,10 @@ export const DEFAULT_INCIDENT_FALLBACK: Incident = {
   retry_count: 0,
   human_approved: null,
   post_mortem: '',
-  created_at: new Date().toISOString()
+  created_at: new Date().toISOString(),
+  pr_url: null,
+  pr_number: null,
+  pr_branch: null
 };
 
 export const DEFAULT_WORKER_HEALTH: WorkerHealthResponse = {

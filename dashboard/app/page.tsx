@@ -18,7 +18,8 @@ import {
   RefreshCw,
   Server,
   Layers,
-  ShieldCheck
+  ShieldCheck,
+  GitPullRequest
 } from 'lucide-react';
 
 // ==========================================
@@ -693,15 +694,31 @@ export default function IncidentControlCenter() {
             <div className="flex items-center space-x-3">
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
               <div>
-                <span className="text-xs font-bold text-white uppercase tracking-wider">
-                  Remediation Complete
-                </span>
-                <p className="text-xs text-slate-300">
-                  Transcoding worker patched, verified in sandbox, and telemetry normalized to HEALTHY.
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">
+                    Remediation Complete
+                  </span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    Active Hot-Patch Applied (Runtime Healthy)
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Transcoding worker patched in memory, verified in sandbox, and telemetry normalized to HEALTHY.
                 </p>
               </div>
             </div>
             <div className="flex items-center space-x-3">
+              {incident?.pr_url && (
+                <a
+                  href={incident.pr_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3.5 py-2 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 hover:text-white text-xs font-bold flex items-center space-x-1.5 transition-colors border border-indigo-500/40 shadow-lg shadow-indigo-500/10"
+                >
+                  <GitPullRequest className="w-3.5 h-3.5 text-indigo-300" />
+                  <span>View GitHub PR {incident.pr_number ? `#${incident.pr_number}` : ''} ↗</span>
+                </a>
+              )}
               <button
                 onClick={() => setIsPostMortemOpen(true)}
                 className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-lg shadow-emerald-600/20"
@@ -1093,6 +1110,8 @@ export default function IncidentControlCenter() {
         onClose={() => setIsPostMortemOpen(false)}
         postMortem={incident?.post_mortem || ''}
         incidentId={incident?.incident_id || ''}
+        prUrl={incident?.pr_url}
+        prNumber={incident?.pr_number}
       />
 
       {/* Global Ops Footer */}

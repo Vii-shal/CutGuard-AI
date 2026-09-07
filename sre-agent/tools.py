@@ -195,7 +195,9 @@ def commit_and_tag_fix(
         check = subprocess.run(["git", "status"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
         if check.returncode != 0:
             subprocess.run(["git", "init"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
-            subprocess.run(["git", "config", "user.name", "CutGuard SRE Bot"], cwd=repo_root, shell=(sys.platform == "win32"))
+
+        subprocess.run(["git", "config", "user.name", "CutGuard SRE Bot"], cwd=repo_root, shell=(sys.platform == "win32"))
+        subprocess.run(["git", "config", "user.email", "cutguard-sre@cutguard.ai"], cwd=repo_root, shell=(sys.platform == "win32"))
         subprocess.run(["git", "add", "-A"], cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
         commit_res = subprocess.run(
             ["git", "commit", "-m", commit_msg],
