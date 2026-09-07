@@ -27,6 +27,7 @@ playerRouter.get('/player', (req: Request, res: Response) => {
   const activeScenario = getActiveChaosScenario();
   const activeIncident = getActiveIncident();
   const isCrashed = activeScenario !== 'NONE';
+  const dashboardUrl = process.env.DASHBOARD_URL || 'http://localhost:3000';
 
   const html = `<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -86,8 +87,8 @@ playerRouter.get('/player', (req: Request, res: Response) => {
       </div>
 
       <div class="flex items-center flex-wrap gap-2.5">
-        <a href="http://localhost:3000" target="_blank" class="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-indigo-600/25 flex items-center gap-1.5">
-          <span>Mission Control Dashboard (Port 3000)</span>
+        <a href="${dashboardUrl}" target="_blank" class="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-indigo-600/25 flex items-center gap-1.5">
+          <span>Mission Control Dashboard</span>
           <span>&nearr;</span>
         </a>
         <a href="/docs" target="_blank" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition border border-slate-700 flex items-center gap-1.5">
@@ -158,8 +159,8 @@ playerRouter.get('/player', (req: Request, res: Response) => {
                   <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
                   CutGuard SRE Agent Dispatched
                 </span>
-                <a href="http://localhost:3000" target="_blank" class="text-cyan-400 hover:text-cyan-300 font-bold underline">
-                  View Triage on :3000 &rarr;
+                <a href="${dashboardUrl}" target="_blank" class="text-cyan-400 hover:text-cyan-300 font-bold underline">
+                  View Triage on Dashboard &rarr;
                 </a>
               </div>
             </div>

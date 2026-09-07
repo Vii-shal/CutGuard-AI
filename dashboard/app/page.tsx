@@ -132,9 +132,9 @@ export interface WorkerHealthResponse {
 const NOMINAL_POLL_INTERVAL_MS = 2500;
 const ACTIVE_POLL_INTERVAL_MS = 1000;
 
-// Infrastructure Endpoints
-const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_URL || 'http://localhost:4001';
-const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8000';
+// Infrastructure Endpoints - Environment Variables with Fallbacks
+const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_URL || process.env.PIPELINE_URL || 'http://localhost:4001';
+const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || process.env.AGENT_URL || 'http://localhost:8000';
 
 export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
@@ -156,9 +156,6 @@ export default function IncidentControlCenter() {
 
   // Active Incident State (null represents nominal IDLE monitoring)
   const [incident, setIncident] = useState<Incident | null>(null);
-
-  // Simulation in-flight state for instant event-driven chaos injection
-  const [isSimulatingChaos, setIsSimulatingChaos] = useState<boolean>(false);
 
   // Active state references for asynchronous callbacks to avoid stale closures
   const incidentRef = useRef<Incident | null>(incident);
@@ -428,7 +425,7 @@ export default function IncidentControlCenter() {
 
   // =========================================================================
   // Real-Time Event-Driven Sync: Media Pipeline SSE Stream (/api/chaos/events)
-  // Re-fetches immediately whenever corrupt code or failure is detected
+  // Re-fetches immediately whenever pipeline failure or anomaly is detected
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
@@ -452,7 +449,7 @@ export default function IncidentControlCenter() {
             const isDegraded = Boolean(data.isCrashed || (data.scenario && data.scenario !== 'NONE'));
             setIsClusterDegraded(isDegraded);
 
-            // Immediately re-fetch cluster state and incident state on corrupt code detection or reset
+            // Immediately re-fetch cluster state and incident state on failure detection or reset
             fetchSystemOverview();
           } catch (err) {
             console.warn('[Pipeline SSE] Event parse error:', err);
@@ -581,37 +578,7 @@ export default function IncidentControlCenter() {
   }, [activeStatus, isClusterDegraded, fetchIncidentState, fetchSystemOverview, clearPollTimer]);
 
   // =========================================================================
-  // Requirement 2: Immediate Trigger on Chaos Injection
-  // Immediately invokes fetchSystemOverview() once the POST returns HTTP 200
-  // without waiting for the background polling interval.
-  // =========================================================================
-  const handleSimulateCrash = useCallback(async (scenario = 'UNSUPPORTED_PIXEL_FORMAT') => {
-    setIsSimulatingChaos(true);
-    try {
-      const res = await fetch(`${PIPELINE_URL}/api/chaos/inject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          scenario,
-          targetWorker: 'worker-transcode-04',
-          severity: 'CRITICAL'
-        })
-      });
-
-      if (res.ok) {
-        setIsClusterDegraded(true);
-        // Immediately invoke fetchSystemOverview() once POST returns HTTP 200
-        await fetchSystemOverview();
-      }
-    } catch (err) {
-      console.warn('[SimulateCrash] Failed to inject chaos:', err);
-    } finally {
-      setIsSimulatingChaos(false);
-    }
-  }, [fetchSystemOverview]);
-
-  // =========================================================================
-  // Requirement 3: Immediate Trigger on Remediation & Human Approval
+  // Synchronized Remediation & Human Approval Handler
   // Immediately invokes fetchSystemOverview() to switch UI state to RESOLVED
   // and normalize worker pool metrics instantly in the same render cycle.
   // =========================================================================
@@ -738,7 +705,13 @@ export default function IncidentControlCenter() {
   if (!isInitialSyncDone) {
     return (
       <div className="min-h-screen flex flex-col bg-[#030712] text-slate-100 font-sans">
-        <Header activeStatus="SYNCING" pipelineOnline={pipelineOnline} agentOnline={agentOnline} />
+        <Header
+          activeStatus="SYNCING"
+          pipelineOnline={pipelineOnline}
+          agentOnline={agentOnline}
+          pipelineUrl={PIPELINE_URL}
+          agentUrl={AGENT_URL}
+        />
         <main className="flex-1 max-w-7xl w-full mx-auto p-6 flex flex-col items-center justify-center space-y-4 min-h-[60vh]">
           <div className="relative flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-600/30 to-indigo-600/30 border border-cyan-500/40 text-cyan-400 shadow-xl shadow-cyan-950/50">
             <Activity className="w-7 h-7 animate-pulse" />
@@ -765,8 +738,8 @@ export default function IncidentControlCenter() {
         activeStatus={activeStatus}
         pipelineOnline={pipelineOnline}
         agentOnline={agentOnline}
-        onSimulateCrash={handleSimulateCrash}
-        isSimulating={isSimulatingChaos}
+        pipelineUrl={PIPELINE_URL}
+        agentUrl={AGENT_URL}
       />
 
       {/* Main Command Center */}
@@ -885,23 +858,14 @@ export default function IncidentControlCenter() {
                   </h2>
                   <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
                     {isClusterDegraded
-                      ? `Transcoding worker pod degradation detected on ${workerHealth?.workerPool?.cluster || 'gke-us-central1-cinema-render'} (${workerHealth?.workerPool?.nodeGroup || 'n2-highmem-16'}). Active scenario: ${workerHealth?.chaosState?.scenario || 'CORRUPTED_STREAM'}. Autonomous self-healing armed.`
+                      ? `Transcoding worker pod degradation detected on ${workerHealth?.workerPool?.cluster || 'gke-us-central1-cinema-render'} (${workerHealth?.workerPool?.nodeGroup || 'n2-highmem-16'}). Active scenario: ${workerHealth?.chaosState?.scenario || 'STREAM_ANOMALY'}. Autonomous self-healing armed.`
                       : 'CutGuard AI autonomous SRE agent is actively monitoring cluster telemetry streams (Grafana Loki & OpenTelemetry). Transcoding worker pods are running within normal memory and bitrate parameters.'}
                   </p>
                 </div>
               </div>
 
-              {/* Direct Navigation to Platform Visualizer & Quick Chaos Injection */}
+              {/* Direct Navigation to Platform Visualizer */}
               <div className="flex flex-col sm:flex-row items-start md:items-end gap-2.5">
-                <button
-                  onClick={() => handleSimulateCrash('UNSUPPORTED_PIXEL_FORMAT')}
-                  disabled={isSimulatingChaos}
-                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-rose-950/60 border border-rose-400/40 transition-all duration-200 active:scale-95 whitespace-nowrap disabled:opacity-50"
-                  title="Simulate Corrupt Video Stream Payload (Exit 139) on Worker"
-                >
-                  <AlertCircle className="w-4 h-4 text-white" />
-                  <span>{isSimulatingChaos ? 'Simulating Fault...' : 'Simulate Corrupt Stream Payload'}</span>
-                </button>
                 <a
                   href={`${PIPELINE_URL}/player`}
                   target="_blank"
@@ -909,7 +873,7 @@ export default function IncidentControlCenter() {
                   className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-indigo-950/60 border border-indigo-400/40 transition-all duration-200 active:scale-95 whitespace-nowrap"
                 >
                   <Play className="w-4 h-4 fill-white" />
-                  <span>Open Video Stream Player (:4001) &nearr;</span>
+                  <span>Open Video Stream Player &nearr;</span>
                 </a>
               </div>
             </div>
@@ -976,13 +940,13 @@ export default function IncidentControlCenter() {
                   </div>
                 </div>
                 <div className="text-base font-bold font-mono text-white">
-                  {pipelineOnline ? 'Port 4001 ONLINE' : 'OFFLINE'}
+                  {pipelineOnline ? 'Pipeline ONLINE' : 'OFFLINE'}
                 </div>
                 <div className="text-[11px] font-mono">
                   {pipelineOnline ? (
                     isClusterDegraded ? (
                       <span className="text-amber-400 font-medium">
-                        Worker Corrupted • Pool {workerHealth?.workerPool?.activeWorkers ?? 1}/{workerHealth?.workerPool?.totalCapacity ?? 16} ({workerHealth?.chaosState?.scenario || 'DEGRADED'})
+                        Worker Degraded • Pool {workerHealth?.workerPool?.activeWorkers ?? 1}/{workerHealth?.workerPool?.totalCapacity ?? 16} ({workerHealth?.chaosState?.scenario || 'DEGRADED'})
                       </span>
                     ) : (
                       <span className="text-slate-400">
@@ -1009,7 +973,7 @@ export default function IncidentControlCenter() {
                   <span className={`w-2 h-2 rounded-full ${agentOnline ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-500'}`} />
                 </div>
                 <div className="text-base font-bold font-mono text-white">
-                  {agentOnline ? 'Port 8000 ARMED' : 'OFFLINE'}
+                  {agentOnline ? 'SRE Agent ARMED' : 'OFFLINE'}
                 </div>
                 <div className="text-[11px] text-slate-500 font-mono">
                   {agentOnline ? 'Gemini 2.0 + HITL Gate' : 'FastAPI unavailable'}

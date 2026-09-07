@@ -262,7 +262,8 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
   let agentDispatched = false;
   try {
     const agentPort = process.env.AGENT_PORT || 8000;
-    const webhookRes = await fetch(`http://localhost:${agentPort}/api/incident/trigger`, {
+    const agentUrl = process.env.AGENT_URL || `http://localhost:${agentPort}`;
+    const webhookRes = await fetch(`${agentUrl}/api/incident/trigger`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

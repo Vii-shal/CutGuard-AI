@@ -65,9 +65,10 @@ class GrafanaMCPClient:
 
         # Priority 2: Query mock-pipeline in-memory ring buffer at GET /api/logs
         pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
+        pipeline_url = os.getenv("PIPELINE_URL", f"http://localhost:{pipeline_port}")
         try:
             import requests
-            logs_res = requests.get(f"http://localhost:{pipeline_port}/api/logs?limit=50", timeout=1.5)
+            logs_res = requests.get(f"{pipeline_url}/api/logs?limit=50", timeout=1.5)
             if logs_res.status_code == 200:
                 logs_data = logs_res.json()
                 all_logs = logs_data.get("logs", [])
@@ -96,7 +97,7 @@ class GrafanaMCPClient:
         # Priority 3: Check live mock-pipeline telemetry stream if available on /api/chaos/status
         try:
             import requests
-            chaos_res = requests.get(f"http://localhost:{pipeline_port}/api/chaos/status", timeout=1.5)
+            chaos_res = requests.get(f"{pipeline_url}/api/chaos/status", timeout=1.5)
             if chaos_res.status_code == 200:
                 chaos_data = chaos_res.json()
                 active_inc = chaos_data.get("activeIncident")

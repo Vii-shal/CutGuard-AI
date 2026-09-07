@@ -391,12 +391,13 @@ CutGuard AI intercepted the crash telemetry, mapped the blast radius across depe
 
     print("[DEPLOY NODE] Deployment complete. RCA Post-Mortem compiled.")
 
-    # Notify mock-pipeline on port 4001 to sync state
+    # Notify mock-pipeline to sync state
     pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
+    pipeline_url = os.getenv("PIPELINE_URL", f"http://localhost:{pipeline_port}")
     try:
         import requests
         requests.post(
-            f"http://localhost:{pipeline_port}/api/patch/apply",
+            f"{pipeline_url}/api/patch/apply",
             json={
                 "patch": diff,
                 "incidentId": state.get("incident_id"),
@@ -404,8 +405,8 @@ CutGuard AI intercepted the crash telemetry, mapped the blast radius across depe
             },
             timeout=2.0
         )
-        requests.post(f"http://localhost:{pipeline_port}/api/chaos/reset", timeout=2.0)
-        print(f"[DEPLOY NODE] Notified mock-pipeline on port {pipeline_port}. Pipeline normalized to HEALTHY.")
+        requests.post(f"{pipeline_url}/api/chaos/reset", timeout=2.0)
+        print(f"[DEPLOY NODE] Notified mock-pipeline at {pipeline_url}. Pipeline normalized to HEALTHY.")
     except Exception as e:
         print(f"[DEPLOY NODE] mock-pipeline sync notice: {e}")
 
