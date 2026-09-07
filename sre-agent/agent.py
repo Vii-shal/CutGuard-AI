@@ -338,6 +338,7 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                 f"The diff MUST begin with '--- a/{culprit_file}' and '+++ b/{culprit_file}'.\n"
                 "Do not include conversational prose or explanation outside the unified diff block."
             )
+            last_model_error = None
             model_names = [os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"), "gemini-flash-latest", "gemini-3.8-flash"]
             for m_name in model_names:
                 try:
@@ -355,9 +356,11 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                     if generated_diff:
                         break
                 except Exception as model_err:
+                    last_model_error = str(model_err)
                     print(f"[Sandbox Node] Model {m_name} notice: {model_err}")
                     continue
         except Exception as e:
+            last_model_error = str(e)
             print(f"[Sandbox Node] Gemini synthesis notice: {e}")
 
     # ZERO pre-baked diff injection: all patches must be dynamic LLM outputs
@@ -383,7 +386,10 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
         if not current_code:
             diag.append(f"Source code could not be loaded for {culprit_file or 'component'}")
         if client and culprit_file and current_code:
-            diag.append("Gemini model response did not produce a unified diff")
+            if last_model_error:
+                diag.append(f"Gemini API error ({last_model_error})")
+            else:
+                diag.append("Gemini model response did not produce a unified diff")
         diag_msg = f"[Synthesis Note] {'; '.join(diag)}"
         print(f"[SANDBOX PATCH NODE] {diag_msg}")
         test_output = f"{diag_msg}\n{test_output}"

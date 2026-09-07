@@ -146,7 +146,8 @@ async def health_check():
         "genai_sdk_installed": GENAI_AVAILABLE,
         "client_initialized": bool(client),
         "last_gemini_error": LAST_GEMINI_ERROR,
-        "key_length": len(clean_key)
+        "key_length": len(clean_key),
+        "key_preview": f"{clean_key[:6]}...{clean_key[-4:]}" if len(clean_key) >= 10 else "too_short"
     }
 
 
