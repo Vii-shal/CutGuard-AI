@@ -128,7 +128,7 @@ export interface WorkerHealthResponse {
 }
 
 // Controlled Polling Intervals
-const NOMINAL_POLL_INTERVAL_MS = 5000;
+const NOMINAL_POLL_INTERVAL_MS = 4000;
 const ACTIVE_POLL_INTERVAL_MS = 1200;
 
 // Infrastructure Endpoints
@@ -153,6 +153,9 @@ export default function IncidentControlCenter() {
   // Active Incident State (null represents nominal IDLE monitoring)
   const [incident, setIncident] = useState<Incident | null>(null);
 
+  // Simulation in-flight state for instant event-driven chaos injection
+  const [isSimulatingChaos, setIsSimulatingChaos] = useState<boolean>(false);
+
   // Active state references for asynchronous callbacks to avoid stale closures
   const incidentRef = useRef<Incident | null>(incident);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -175,209 +178,133 @@ export default function IncidentControlCenter() {
   }, []);
 
   // =========================================================================
-  // Requirement 1: Isolated Infrastructure Heartbeat Effect
-  // Dedicated useEffect with a 4-second setInterval that probes:
-  //   - Worker: ${PIPELINE_URL}/health
-  //   - Agent:  ${AGENT_URL}/api/health
-  // Sets pipelineOnline strictly based on workerRes.ok (green dot).
-  // Sets agentOnline strictly based on agentRes.ok.
-  // Parses live workerHealth and updates cluster degraded status.
+  // Requirement 1: Extract Core Telemetry Fetchers into Reusable Callbacks
   // =========================================================================
-  useEffect(() => {
-    let isMounted = true;
 
-    const probeHealth = async () => {
-      try {
-        const [workerRes, agentRes] = await Promise.allSettled([
-          fetch(`${PIPELINE_URL}/health`, { cache: 'no-store' }),
-          fetch(`${AGENT_URL}/api/health`, { cache: 'no-store' })
-        ]);
+  // 1. fetchClusterState: Queries /api/chaos/status and /health on Port 4001
+  // Updates crash status, active scenario, and live worker pool capacity
+  const fetchClusterState = useCallback(async () => {
+    try {
+      const [chaosRes, healthRes] = await Promise.allSettled([
+        fetch(`${PIPELINE_URL}/api/chaos/status`, { cache: 'no-store' }),
+        fetch(`${PIPELINE_URL}/health`, { cache: 'no-store' })
+      ]);
 
-        if (!isMounted) return;
+      const isPipelineOk = healthRes.status === 'fulfilled' && healthRes.value.ok;
+      setPipelineOnline(isPipelineOk);
 
-        const isPipelineOk = workerRes.status === 'fulfilled' && workerRes.value.ok;
-        const isAgentOk = agentRes.status === 'fulfilled' && agentRes.value.ok;
-
-        setPipelineOnline(isPipelineOk);
-        setAgentOnline(isAgentOk);
-
-        // Bind live /health payload from Port 4001
-        if (isPipelineOk && workerRes.status === 'fulfilled') {
-          try {
-            const healthData: WorkerHealthResponse = await workerRes.value.json();
-            setWorkerHealth(healthData);
-            const isDegraded = healthData.status === 'degraded' || 
-              Boolean(healthData.chaosState?.scenario && healthData.chaosState.scenario !== 'NONE');
-            setIsClusterDegraded(isDegraded);
-          } catch (err) {
-            console.warn('[Heartbeat] Failed to parse worker health JSON:', err);
-          }
-        } else {
-          setWorkerHealth(null);
-          setIsClusterDegraded(false);
-        }
-      } catch {
-        if (isMounted) {
-          setPipelineOnline(false);
-          setAgentOnline(false);
-          setWorkerHealth(null);
-          setIsClusterDegraded(false);
+      let chaosData: ChaosStatusResponse | null = null;
+      if (chaosRes.status === 'fulfilled' && chaosRes.value.ok) {
+        try {
+          chaosData = await chaosRes.value.json();
+        } catch (e) {
+          console.warn('[fetchClusterState] Failed to parse chaos status JSON:', e);
         }
       }
-    };
 
-    probeHealth();
-    const intervalId = setInterval(probeHealth, 4000);
+      let healthData: WorkerHealthResponse | null = null;
+      if (healthRes.status === 'fulfilled' && healthRes.value.ok) {
+        try {
+          healthData = await healthRes.value.json();
+          setWorkerHealth(healthData);
+        } catch (e) {
+          console.warn('[fetchClusterState] Failed to parse /health JSON:', e);
+        }
+      } else {
+        setWorkerHealth(null);
+      }
 
-    return () => {
-      isMounted = false;
-      clearInterval(intervalId);
-    };
+      const isDegraded = Boolean(
+        chaosData?.isCrashed ||
+        (chaosData?.activeScenario && chaosData.activeScenario !== 'NONE') ||
+        healthData?.status === 'degraded' ||
+        (healthData?.chaosState?.scenario && healthData.chaosState.scenario !== 'NONE')
+      );
+
+      setIsClusterDegraded(isDegraded);
+
+      return { isPipelineOk, chaosData, healthData, isDegraded };
+    } catch (err) {
+      console.warn('[fetchClusterState] Network error:', err);
+      setPipelineOnline(false);
+      setWorkerHealth(null);
+      setIsClusterDegraded(false);
+      return { isPipelineOk: false, chaosData: null, healthData: null, isDegraded: false };
+    }
   }, []);
 
-  // =========================================================================
-  // Requirement 3: Independent Incident Polling
-  // - Nominal / Idle: Slow baseline polling (5000ms) to detect new failures
-  // - Triaging / Active: Rapid polling (1200ms) to stream real-time AST/sandbox progress
-  // - HITL Gate (NEEDS_APPROVAL / WAITING_FOR_HUMAN): IMMEDIATELY CLEAR & STOP ALL INCIDENT TIMERS
-  // - Resolved / Escalated: Stop polling until user initiates action
-  // When the incident pauses at NEEDS_APPROVAL, halting the incident poller
-  // must NOT freeze or turn off the header health badges.
-  // =========================================================================
-  useEffect(() => {
-    clearPollTimer();
+  // 2. fetchIncidentState: Queries /api/incident/latest and /api/health on Port 8000
+  // Updates active triage steps, AST blast radius, generated diff, and HITL gate state
+  const fetchIncidentState = useCallback(async () => {
+    try {
+      const [agentHealthRes, agentIncRes] = await Promise.allSettled([
+        fetch(`${AGENT_URL}/api/health`, { cache: 'no-store' }),
+        fetch(`${AGENT_URL}/api/incident/latest`, { cache: 'no-store' })
+      ]);
 
-    // Condition 1: HITL Gate -> Immediately halt incident timers. Zero network requests during review.
-    // Halting incident poller does NOT freeze or turn off header health badges.
-    if (activeStatus === 'NEEDS_APPROVAL' || activeStatus === 'WAITING_FOR_HUMAN') {
-      return;
-    }
+      const isAgentOk = agentHealthRes.status === 'fulfilled' && agentHealthRes.value.ok;
+      setAgentOnline(isAgentOk);
 
-    // Condition 2: Terminal State -> Stop polling until explicit user action
-    if (activeStatus === 'RESOLVED' || activeStatus === 'ESCALATED' || activeStatus === 'ERROR') {
-      return;
-    }
-
-    // Condition 3: Active Investigation -> Rapid polling (1200ms)
-    if (
-      activeStatus === 'INITIALIZING' ||
-      activeStatus === 'ANALYZING' ||
-      activeStatus === 'TRIAGING' ||
-      activeStatus === 'TRIAGED' ||
-      activeStatus === 'BLAST_ASSESSED' ||
-      activeStatus === 'SANDBOXED' ||
-      activeStatus === 'SANDBOX_TESTED' ||
-      activeStatus === 'DEPLOYING'
-    ) {
-      let isCancelled = false;
-
-      const pollActiveInvestigation = async () => {
-        if (isCancelled || isRequestInFlightRef.current) return;
-        isRequestInFlightRef.current = true;
-
+      let latestAgentInc: Incident | null = null;
+      if (agentIncRes.status === 'fulfilled' && agentIncRes.value.ok) {
         try {
-          const currentInc = incidentRef.current;
-          const [agentRes, pipelineRes] = await Promise.allSettled([
-            fetch(`${AGENT_URL}/api/incident/latest`, { cache: 'no-store' }),
-            fetch(`${PIPELINE_URL}/api/chaos/status`, { cache: 'no-store' })
-          ]);
-
-          if (isCancelled) return;
-
-          if (pipelineRes.status === 'fulfilled' && pipelineRes.value.ok) {
-            const chaosData: ChaosStatusResponse = await pipelineRes.value.json();
-            setIsClusterDegraded(Boolean(chaosData.isCrashed || (chaosData.activeScenario && chaosData.activeScenario !== 'NONE')));
-          }
-
-          let latestAgentInc: Incident | null = null;
-          if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
-            const data: AgentLatestResponse = await agentRes.value.json();
-            latestAgentInc = data.incident;
-          }
-
-          if (latestAgentInc && latestAgentInc.incident_id) {
-            if (!currentInc?.incident_id || latestAgentInc.incident_id === currentInc.incident_id) {
-              setIncident(prev => ({
-                ...(prev || latestAgentInc!),
-                ...latestAgentInc!,
-                blast_details: latestAgentInc!.blast_details || prev?.blast_details || {}
-              }));
-
-              // If the incident has reached HITL or finished, break out of loop
-              if (
-                latestAgentInc.status === 'NEEDS_APPROVAL' ||
-                latestAgentInc.status === 'WAITING_FOR_HUMAN' ||
-                latestAgentInc.status === 'RESOLVED' ||
-                latestAgentInc.status === 'ESCALATED'
-              ) {
-                return;
-              }
-            }
-          }
-        } catch (err) {
-          console.warn('[Active Poll] Transient polling error:', err);
-        } finally {
-          isRequestInFlightRef.current = false;
-        }
-
-        if (!isCancelled) {
-          pollTimerRef.current = setTimeout(pollActiveInvestigation, ACTIVE_POLL_INTERVAL_MS);
-        }
-      };
-
-      pollTimerRef.current = setTimeout(pollActiveInvestigation, ACTIVE_POLL_INTERVAL_MS);
-
-      return () => {
-        isCancelled = true;
-        clearPollTimer();
-      };
-    }
-
-    // Condition 4: Nominal / Idle State -> Slow baseline polling (5000ms)
-    let isCancelled = false;
-
-    const pollNominalTelemetry = async () => {
-      if (isCancelled || isRequestInFlightRef.current) return;
-      isRequestInFlightRef.current = true;
-
-      try {
-        const [chaosRes, agentRes] = await Promise.allSettled([
-          fetch(`${PIPELINE_URL}/api/chaos/status`, { cache: 'no-store' }),
-          fetch(`${AGENT_URL}/api/incident/latest`, { cache: 'no-store' })
-        ]);
-
-        if (isCancelled) return;
-
-        let pipelineChaos: ChaosStatusResponse | null = null;
-        if (chaosRes.status === 'fulfilled' && chaosRes.value.ok) {
-          const data: ChaosStatusResponse = await chaosRes.value.json();
-          pipelineChaos = data;
-          setIsClusterDegraded(Boolean(data.isCrashed || (data.activeScenario && data.activeScenario !== 'NONE')));
-        } else {
-          setIsClusterDegraded(false);
-        }
-
-        let latestAgentInc: Incident | null = null;
-        if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
-          const data: AgentLatestResponse = await agentRes.value.json();
+          const data: AgentLatestResponse = await agentIncRes.value.json();
           latestAgentInc = data.incident;
+        } catch (e) {
+          console.warn('[fetchIncidentState] Failed to parse incident JSON:', e);
         }
+      }
 
-        // Case A: SRE Agent has an active incident record
-        if (latestAgentInc && latestAgentInc.incident_id) {
-          if (latestAgentInc.status !== 'RESOLVED' && latestAgentInc.status !== 'ESCALATED') {
-            setIncident({
-              ...latestAgentInc,
-              blast_details: latestAgentInc.blast_details || {}
-            });
-            return; // State update triggers effect re-evaluation
-          }
-        } 
-        // Case B: Pipeline crashed on Port 4001, ingest crash telemetry passively
-        else if (pipelineChaos && pipelineChaos.isCrashed && pipelineChaos.activeIncident) {
-          const inc = pipelineChaos.activeIncident;
-          setIsClusterDegraded(true);
-          setIncident({
+      if (latestAgentInc && latestAgentInc.incident_id) {
+        const currentInc = incidentRef.current;
+        if (latestAgentInc.status !== 'RESOLVED' && latestAgentInc.status !== 'ESCALATED') {
+          setIncident(prev => ({
+            ...(prev || latestAgentInc!),
+            ...latestAgentInc!,
+            blast_details: latestAgentInc!.blast_details || prev?.blast_details || {},
+            post_mortem: latestAgentInc!.post_mortem || prev?.post_mortem || ''
+          }));
+        } else if (currentInc?.incident_id === latestAgentInc.incident_id) {
+          setIncident(prev => ({
+            ...(prev || latestAgentInc!),
+            ...latestAgentInc!,
+            blast_details: latestAgentInc!.blast_details || prev?.blast_details || {},
+            post_mortem: prev?.post_mortem || latestAgentInc!.post_mortem || ''
+          }));
+        }
+      }
+
+      return { isAgentOk, latestAgentInc };
+    } catch (err) {
+      console.warn('[fetchIncidentState] Network error:', err);
+      setAgentOnline(false);
+      return { isAgentOk: false, latestAgentInc: null };
+    }
+  }, []);
+
+  // 3. fetchSystemOverview: Runs both fetchers via Promise.allSettled()
+  // Handles passive telemetry ingestion if pipeline crashed on Port 4001 before SRE Agent finished
+  const fetchSystemOverview = useCallback(async () => {
+    try {
+      const [clusterResult, incidentResult] = await Promise.allSettled([
+        fetchClusterState(),
+        fetchIncidentState()
+      ]);
+
+      const cluster = clusterResult.status === 'fulfilled' ? clusterResult.value : null;
+      const incidentData = incidentResult.status === 'fulfilled' ? incidentResult.value : null;
+
+      // Ingest passive crash telemetry if pipeline crashed on Port 4001 and agent has not returned an incident yet
+      if (
+        cluster?.isDegraded &&
+        cluster.chaosData?.isCrashed &&
+        cluster.chaosData.activeIncident &&
+        (!incidentData?.latestAgentInc || !incidentData.latestAgentInc.incident_id)
+      ) {
+        const inc = cluster.chaosData.activeIncident;
+        setIncident(prev => {
+          if (prev && prev.incident_id) return prev;
+          return {
             incident_id: inc.incidentId || `inc-chaos-${Date.now()}`,
             service: 'ffmpeg-transcoder',
             status: 'ANALYZING',
@@ -393,35 +320,150 @@ export default function IncidentControlCenter() {
             human_approved: null,
             post_mortem: '',
             created_at: inc.timestamp || new Date().toISOString()
-          });
-          return; // State update triggers effect re-evaluation
+          };
+        });
+      }
+
+      return { cluster, incident: incidentData };
+    } catch (err) {
+      console.warn('[fetchSystemOverview] System overview error:', err);
+      return null;
+    }
+  }, [fetchClusterState, fetchIncidentState]);
+
+  // =========================================================================
+  // Baseline Infrastructure Heartbeat (4000ms)
+  // Dedicated background health probe to ensure pipelineOnline, agentOnline,
+  // and worker pool metrics continuously update even when paused at HITL gates.
+  // =========================================================================
+  useEffect(() => {
+    let isMounted = true;
+
+    const probe = async () => {
+      if (!isMounted) return;
+      try {
+        const [, agentHealthRes] = await Promise.allSettled([
+          fetchClusterState(),
+          fetch(`${AGENT_URL}/api/health`, { cache: 'no-store' })
+        ]);
+        if (isMounted && agentHealthRes.status === 'fulfilled') {
+          setAgentOnline(agentHealthRes.value.ok);
+        }
+      } catch {
+        if (isMounted) setAgentOnline(false);
+      }
+    };
+
+    probe();
+    const intervalId = setInterval(probe, NOMINAL_POLL_INTERVAL_MS);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [fetchClusterState]);
+
+  // =========================================================================
+  // Requirement 4: Dynamic Polling Acceleration (Adaptive Polling Loop)
+  // - Nominal (incident === null && !isClusterDegraded): 4000ms cadence
+  // - Active / Degraded (isClusterDegraded || status in active triage): 1200ms cadence
+  //   + immediate out-of-band fetch on trigger
+  // - HITL Gate (NEEDS_APPROVAL / WAITING_FOR_HUMAN): Halt fast incident loop, 
+  //   maintain 4000ms heartbeat
+  // =========================================================================
+  useEffect(() => {
+    clearPollTimer();
+
+    // Condition 1: HITL Gate -> Pause fast incident polling. Zero spam during human review.
+    if (activeStatus === 'NEEDS_APPROVAL' || activeStatus === 'WAITING_FOR_HUMAN') {
+      return;
+    }
+
+    // Condition 2: Terminal State -> No fast polling needed unless cluster is degraded
+    if ((activeStatus === 'RESOLVED' || activeStatus === 'ESCALATED' || activeStatus === 'ERROR') && !isClusterDegraded) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    // Determine poll interval: 1200ms when active triage or cluster degraded; 4000ms when nominal
+    const isAccelerated = isClusterDegraded || (
+      activeStatus !== 'IDLE' &&
+      activeStatus !== 'RESOLVED' &&
+      activeStatus !== 'ESCALATED'
+    );
+    const pollInterval = isAccelerated ? ACTIVE_POLL_INTERVAL_MS : NOMINAL_POLL_INTERVAL_MS;
+
+    const runAdaptivePoll = async () => {
+      if (isCancelled || isRequestInFlightRef.current) return;
+      isRequestInFlightRef.current = true;
+
+      try {
+        if (isAccelerated) {
+          // Accelerated cycle: fetch incident state and cluster state
+          await fetchSystemOverview();
+        } else {
+          // Baseline nominal cycle: check for new incidents
+          await fetchIncidentState();
         }
       } catch (err) {
-        console.warn('[Nominal Poll] Transient nominal check error:', err);
+        console.warn('[Adaptive Poll] Error during adaptive poll cycle:', err);
       } finally {
         isRequestInFlightRef.current = false;
       }
 
       if (!isCancelled) {
-        pollTimerRef.current = setTimeout(pollNominalTelemetry, NOMINAL_POLL_INTERVAL_MS);
+        pollTimerRef.current = setTimeout(runAdaptivePoll, pollInterval);
       }
     };
 
-    // Run immediate check upon entering nominal state, then schedule next
-    pollNominalTelemetry();
+    // Trigger immediate out-of-band fetch if accelerated, else schedule next interval
+    if (isAccelerated) {
+      runAdaptivePoll();
+    } else {
+      pollTimerRef.current = setTimeout(runAdaptivePoll, pollInterval);
+    }
 
     return () => {
       isCancelled = true;
       clearPollTimer();
     };
-  }, [activeStatus, clearPollTimer]);
+  }, [activeStatus, isClusterDegraded, fetchIncidentState, fetchSystemOverview, clearPollTimer]);
 
   // =========================================================================
-  // Synchronized "Approve & Deploy Fix" Action Handler
-  // 1. Dispatch approval to SRE Agent: POST ${AGENT_URL}/api/incident/:id/resume
-  // 2. Apply hot-patch to mock-pipeline: POST ${PIPELINE_URL}/api/patch/apply
-  // 3. Clear fault state: POST ${PIPELINE_URL}/api/chaos/reset
-  // 4. Retrieve enterprise RCA post-mortem report
+  // Requirement 2: Immediate Trigger on Chaos Injection
+  // Immediately invokes fetchSystemOverview() once the POST returns HTTP 200
+  // without waiting for the background polling interval.
+  // =========================================================================
+  const handleSimulateCrash = useCallback(async (scenario = 'UNSUPPORTED_PIXEL_FORMAT') => {
+    setIsSimulatingChaos(true);
+    try {
+      const res = await fetch(`${PIPELINE_URL}/api/chaos/inject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scenario,
+          targetWorker: 'worker-transcode-04',
+          severity: 'CRITICAL'
+        })
+      });
+
+      if (res.ok) {
+        setIsClusterDegraded(true);
+        // Immediately invoke fetchSystemOverview() once POST returns HTTP 200
+        await fetchSystemOverview();
+      }
+    } catch (err) {
+      console.warn('[SimulateCrash] Failed to inject chaos:', err);
+    } finally {
+      setIsSimulatingChaos(false);
+    }
+  }, [fetchSystemOverview]);
+
+  // =========================================================================
+  // Requirement 3: Immediate Trigger on Remediation & Human Approval
+  // Immediately invokes fetchSystemOverview() to switch UI state to RESOLVED
+  // and normalize worker pool metrics instantly in the same render cycle.
   // =========================================================================
   const handleApprove = async () => {
     const currentInc = incidentRef.current;
@@ -489,17 +531,15 @@ export default function IncidentControlCenter() {
         post_mortem: rcaReport || prev.post_mortem
       }) : null);
 
+      // Immediately fetch latest system overview to normalize worker pool & health badges
+      await fetchSystemOverview();
+
     } finally {
       setIsProcessingApproval(false);
     }
   };
 
-  // =========================================================================
   // Coordinated "Reset to Nominal" Handler
-  // - Clear chaos on Port 4001 (POST /api/chaos/reset)
-  // - Clear incident records on Port 8000 (POST /api/incidents/clear)
-  // - Reset incident state to null in React
-  // =========================================================================
   const handleResetToNominal = async () => {
     // 1. Clear chaos on Port 4001 and incidents on Port 8000
     try {
@@ -512,23 +552,10 @@ export default function IncidentControlCenter() {
     }
 
     setIsClusterDegraded(false);
-    setWorkerHealth(prev => prev ? {
-      ...prev,
-      status: 'healthy',
-      workerPool: prev.workerPool ? {
-        ...prev.workerPool,
-        activeWorkers: 4
-      } : undefined,
-      chaosState: {
-        scenario: 'NONE',
-        activeIncidentId: null
-      }
-    } : null);
-
-    // 2. Reset incident state to null in React
-    // This transitions activeStatus to 'IDLE', which automatically triggers
-    // the slow baseline poll (every 5000ms) and displays the clean green nominal dashboard.
     setIncident(null);
+
+    // Immediately trigger system overview fetch to reflect healthy worker pool
+    await fetchSystemOverview();
   };
 
   // Human-in-the-loop: Reject & Rollback
@@ -548,6 +575,7 @@ export default function IncidentControlCenter() {
         })
       });
       setIncident(prev => prev ? ({ ...prev, status: 'ESCALATED', human_approved: false }) : null);
+      await fetchSystemOverview();
     } catch (err) {
       console.warn('[Reject] Reject notification error:', err);
       setIncident(prev => prev ? ({ ...prev, status: 'ESCALATED', human_approved: false }) : null);
@@ -564,6 +592,8 @@ export default function IncidentControlCenter() {
         activeStatus={activeStatus}
         pipelineOnline={pipelineOnline}
         agentOnline={agentOnline}
+        onSimulateCrash={handleSimulateCrash}
+        isSimulating={isSimulatingChaos}
       />
 
       {/* Main Command Center */}
@@ -688,8 +718,17 @@ export default function IncidentControlCenter() {
                 </div>
               </div>
 
-              {/* Direct Navigation to Platform Visualizer */}
-              <div className="flex flex-col items-start md:items-end gap-2">
+              {/* Direct Navigation to Platform Visualizer & Quick Chaos Injection */}
+              <div className="flex flex-col sm:flex-row items-start md:items-end gap-2.5">
+                <button
+                  onClick={() => handleSimulateCrash('UNSUPPORTED_PIXEL_FORMAT')}
+                  disabled={isSimulatingChaos}
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-bold text-xs flex items-center space-x-2 shadow-xl shadow-rose-950/60 border border-rose-400/40 transition-all duration-200 active:scale-95 whitespace-nowrap disabled:opacity-50"
+                  title="Simulate Corrupt Video Stream Payload (Exit 139) on Worker"
+                >
+                  <AlertCircle className="w-4 h-4 text-white" />
+                  <span>{isSimulatingChaos ? 'Simulating Fault...' : 'Simulate Corrupt Stream Payload'}</span>
+                </button>
                 <a
                   href={`${PIPELINE_URL}/player`}
                   target="_blank"
@@ -699,9 +738,6 @@ export default function IncidentControlCenter() {
                   <Play className="w-4 h-4 fill-white" />
                   <span>Open Video Stream Player (:4001) &nearr;</span>
                 </a>
-                <span className="text-[10px] text-slate-400 font-mono text-right">
-                  Simulate stream corruptions on Port 4001 player or Swagger /docs
-                </span>
               </div>
             </div>
 

@@ -16,7 +16,10 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   activeStatus,
   pipelineOnline,
-  agentOnline
+  agentOnline,
+  onSimulateCrash,
+  isSimulating,
+  selectedScenario
 }) => {
   const isNominal = activeStatus === 'IDLE' || activeStatus === 'RESOLVED';
   const needsApproval = activeStatus === 'NEEDS_APPROVAL';
@@ -88,6 +91,18 @@ export const Header: React.FC<HeaderProps> = ({
               {activeStatus === 'IDLE' ? 'PASSIVE OBSERVABILITY: ARMED' : activeStatus.replace('_', ' ')}
             </span>
           </div>
+
+          {onSimulateCrash && isNominal && (
+            <button
+              onClick={() => onSimulateCrash(selectedScenario || 'UNSUPPORTED_PIXEL_FORMAT')}
+              disabled={isSimulating}
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition shadow-lg shadow-rose-600/20 flex items-center space-x-1.5 active:scale-95 disabled:opacity-50"
+              title="Simulate Corrupt Stream Payload on Worker"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>{isSimulating ? 'Injecting...' : 'Simulate Fault'}</span>
+            </button>
+          )}
 
           <a
             href="http://localhost:4001/player"
