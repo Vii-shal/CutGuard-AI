@@ -271,6 +271,27 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
         with open(culprit_full_path, "r", encoding="utf-8") as f:
             current_code = f.read()
 
+    # Remote pipeline fallback for distributed microservice deployments (e.g. Render)
+    if not current_code and culprit_file:
+        pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
+        pipeline_url = os.getenv("PIPELINE_URL", f"http://localhost:{pipeline_port}").rstrip('/')
+        try:
+            import requests
+            res = requests.get(f"{pipeline_url}/api/file?path={culprit_file}", timeout=3.5)
+            if res.status_code == 200:
+                current_code = res.json().get("content", "")
+                print(f"[SANDBOX PATCH NODE] Successfully fetched {culprit_file} remotely from {pipeline_url}")
+        except Exception as e:
+            print(f"[SANDBOX PATCH NODE] Remote file fetch notice: {e}")
+
+    # Fallback to local copy in sre-agent directory
+    if not current_code and culprit_file:
+        local_candidate = os.path.join(str(Path(__file__).resolve().parent), os.path.basename(culprit_file))
+        if os.path.exists(local_candidate):
+            with open(local_candidate, "r", encoding="utf-8") as f:
+                current_code = f.read()
+                print(f"[SANDBOX PATCH NODE] Read fallback source from {local_candidate}")
+
     generated_diff = ""
     client = _get_gemini_client()
 

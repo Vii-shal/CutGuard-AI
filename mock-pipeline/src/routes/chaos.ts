@@ -186,7 +186,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       exitCode = 139;
       signal = 'SIGSEGV';
       failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
-      stderrLog = `[ERROR] [FFMPEG_ENCODE] [${randomJobId}] Fatal error: Invalid pixel format 'yuv422p10le' for codec 'libx264' with profile 'baseline'. Transcoding process killed with SIGSEGV (exit code 139).`;
+      stderrLog = `[ERROR] [FFMPEG_ENCODE] [${randomJobId}] Fatal error: Invalid pixel format 'yuv422p10le' for codec 'libx264' with profile 'baseline'. Transcoding process killed with SIGSEGV (exit code 139).\n    at processVideoChunk (mock-pipeline/worker.js:35:11)\n    at QueueManager.dispatchChunk (mock-pipeline/queue-manager.js:15:22)`;
       break;
 
     case 'FFMPEG_OOM':
@@ -194,7 +194,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       exitCode = 137;
       signal = 'SIGABRT';
       failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
-      stderrLog = `[FATAL] [FFMPEG_ENCODE] [${randomJobId}] CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)`;
+      stderrLog = `[FATAL] [FFMPEG_ENCODE] [${randomJobId}] CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)\n    at processVideoChunk (mock-pipeline/worker.js:35:11)`;
       break;
 
     case 'SEGMENT_CORRUPTION':
@@ -202,7 +202,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       exitCode = 1;
       signal = 'SIGTERM';
       failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
-      stderrLog = `[ERROR] [MUXER] [${randomJobId}] Fatal error: Non-monotonic DTS in input stream. Video muxing aborted.`;
+      stderrLog = `[ERROR] [MUXER] [${randomJobId}] Fatal error: Non-monotonic DTS in input stream. Video muxing aborted.\n    at StreamStitcher.stitchStream (mock-pipeline/stream-stitcher.js:12:15)`;
       break;
   }
 
