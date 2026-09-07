@@ -2,19 +2,20 @@
 
 import React from 'react';
 import { Terminal, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { IncidentStatus } from '../types';
 
 interface SandboxLogsProps {
   logs: string;
   testPassed?: boolean;
   retryCount?: number;
-  status?: string;
+  status?: IncidentStatus;
 }
 
 export const SandboxLogs: React.FC<SandboxLogsProps> = ({
   logs,
   testPassed = false,
   retryCount = 0,
-  status = ''
+  status = 'IDLE'
 }) => {
   const isRunning = status === 'SANDBOXED' && !logs;
 

@@ -22,119 +22,48 @@ import {
 } from 'lucide-react';
 
 // ==========================================
-// CutGuard AI - Enterprise SRE Types
+// CutGuard AI - Enterprise SRE Types & Config
 // ==========================================
+import {
+  CONFIG,
+  IncidentStatus,
+  Incident,
+  BlastDetails,
+  ChaosIncidentTelemetry,
+  ChaosStatusResponse,
+  WorkerPoolHealth,
+  WorkerChaosState,
+  WorkerHealthResponse,
+  ClusterStateResult,
+  IncidentStateResult,
+  AgentLatestResponse,
+  DEFAULT_BLAST_DETAILS,
+  DEFAULT_INCIDENT_FALLBACK,
+  DEFAULT_WORKER_HEALTH,
+  DEFAULT_CHAOS_STATUS,
+  DEFAULT_CLUSTER_STATE_RESULT,
+  DEFAULT_INCIDENT_STATE_RESULT,
+} from '../types';
 
-export type IncidentStatus = 
-  | 'IDLE'
-  | 'INITIALIZING'
-  | 'SYNCING'
-  | 'ANALYZING'
-  | 'TRIAGING'
-  | 'TRIAGED'
-  | 'BLAST_ASSESSED'
-  | 'SANDBOXED'
-  | 'SANDBOX_TESTED'
-  | 'NEEDS_APPROVAL'
-  | 'WAITING_FOR_HUMAN'
-  | 'DEPLOYING'
-  | 'RESOLVED'
-  | 'ESCALATED'
-  | 'ERROR';
+export type {
+  IncidentStatus,
+  Incident,
+  BlastDetails,
+  ChaosIncidentTelemetry,
+  ChaosStatusResponse,
+  WorkerPoolHealth,
+  WorkerChaosState,
+  WorkerHealthResponse,
+  ClusterStateResult,
+  IncidentStateResult,
+  AgentLatestResponse,
+};
 
-export interface AffectedFile {
-  file: string;
-  lines_of_code: number;
-  symbols_imported: string[];
-}
-
-export interface BlastDetails {
-  blast_score?: number;
-  threat_level?: string;
-  culprit_file?: string;
-  downstream_dependent_count?: number;
-  affected_files?: AffectedFile[];
-  affected_symbols?: string[];
-  affected_endpoints?: string[];
-  blast_description?: string;
-  [key: string]: unknown;
-}
-
-export interface Incident {
-  incident_id: string;
-  service: string;
-  status: IncidentStatus;
-  raw_log: string;
-  culprit_file: string;
-  culprit_commit: string;
-  blast_score: number;
-  blast_details: BlastDetails;
-  generated_diff: string;
-  test_passed: boolean;
-  test_output: string;
-  retry_count: number;
-  human_approved: boolean | null;
-  post_mortem: string;
-  created_at: string;
-  interrupt_payload?: unknown;
-}
-
-export interface ChaosIncidentTelemetry {
-  incidentId?: string;
-  scenario?: string;
-  targetWorker?: string;
-  severity?: string;
-  errorSignature?: string;
-  timestamp?: string;
-  failingFile?: string;
-  affectedPipelineStage?: string;
-  exitCode?: number;
-  signal?: string;
-  status?: string;
-  rawStderr?: string;
-}
-
-export interface ChaosStatusResponse {
-  status: string;
-  isCrashed: boolean;
-  activeScenario: string | null;
-  isFailureArmed: boolean;
-  activeIncident: ChaosIncidentTelemetry | null;
-}
-
-export interface AgentLatestResponse {
-  incident: Incident | null;
-}
-
-export interface WorkerPoolHealth {
-  activeWorkers: number;
-  totalCapacity: number;
-  cluster?: string;
-  nodeGroup?: string;
-}
-
-export interface WorkerChaosState {
-  scenario?: string;
-  activeIncidentId?: string | null;
-}
-
-export interface WorkerHealthResponse {
-  status: 'healthy' | 'degraded' | string;
-  service?: string;
-  uptimeSeconds?: number;
-  workerPool?: WorkerPoolHealth;
-  ffmpegVersion?: string;
-  codecsSupported?: string[];
-  chaosState?: WorkerChaosState;
-}
-
-// Controlled Polling Intervals
-const NOMINAL_POLL_INTERVAL_MS = 2500;
-const ACTIVE_POLL_INTERVAL_MS = 1000;
-
-// Infrastructure Endpoints - Environment Variables with Fallbacks
-const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_URL || process.env.PIPELINE_URL || 'http://localhost:4001';
-const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || process.env.AGENT_URL || 'http://localhost:8000';
+// Configured Endpoints & Polling Intervals from centralized CONFIG
+const PIPELINE_URL = CONFIG.PIPELINE_URL;
+const AGENT_URL = CONFIG.AGENT_URL;
+const NOMINAL_POLL_INTERVAL_MS = CONFIG.NOMINAL_POLL_INTERVAL_MS;
+const ACTIVE_POLL_INTERVAL_MS = CONFIG.ACTIVE_POLL_INTERVAL_MS;
 
 export default function IncidentControlCenter() {
   const [activeTab, setActiveTab] = useState<'diff' | 'logs'>('diff');
@@ -230,13 +159,13 @@ export default function IncidentControlCenter() {
       setPipelineOnline(false);
       setWorkerHealth(null);
       setIsClusterDegraded(false);
-      return { isPipelineOk: false, chaosData: null, healthData: null, isDegraded: false };
+      return DEFAULT_CLUSTER_STATE_RESULT;
     }
   }, []);
 
   // 2. fetchIncidentState: Queries /api/incident/latest and /api/health on Port 8000
   // Updates active triage steps, AST blast radius, generated diff, and HITL gate state
-  const fetchIncidentState = useCallback(async () => {
+  const fetchIncidentState = useCallback(async (): Promise<IncidentStateResult> => {
     try {
       const [agentHealthRes, agentIncRes] = await Promise.allSettled([
         fetch(`${AGENT_URL}/api/health`, { cache: 'no-store' }),
@@ -262,30 +191,30 @@ export default function IncidentControlCenter() {
           setIncident(prev => ({
             ...(prev || latestAgentInc!),
             ...latestAgentInc!,
-            blast_details: latestAgentInc!.blast_details || prev?.blast_details || {},
+            blast_details: latestAgentInc!.blast_details || prev?.blast_details || DEFAULT_BLAST_DETAILS,
             post_mortem: latestAgentInc!.post_mortem || prev?.post_mortem || ''
           }));
         } else if (currentInc?.incident_id === latestAgentInc.incident_id) {
           setIncident(prev => ({
             ...(prev || latestAgentInc!),
             ...latestAgentInc!,
-            blast_details: latestAgentInc!.blast_details || prev?.blast_details || {},
+            blast_details: latestAgentInc!.blast_details || prev?.blast_details || DEFAULT_BLAST_DETAILS,
             post_mortem: prev?.post_mortem || latestAgentInc!.post_mortem || ''
           }));
         }
       }
 
-      return { isAgentOk, latestAgentInc };
+      return { incident: latestAgentInc, isAgentOk };
     } catch (err) {
       console.warn('[fetchIncidentState] Network error:', err);
       setAgentOnline(false);
-      return { isAgentOk: false, latestAgentInc: null };
+      return DEFAULT_INCIDENT_STATE_RESULT;
     }
   }, []);
 
   // 3. fetchSystemOverview: Runs both fetchers via Promise.allSettled()
   // Handles passive telemetry ingestion if pipeline crashed on Port 4001 before SRE Agent finished
-  const fetchSystemOverview = useCallback(async () => {
+  const fetchSystemOverview = useCallback(async (): Promise<{ cluster: ClusterStateResult | null; incident: IncidentStateResult | null }> => {
     try {
       const [clusterResult, incidentResult] = await Promise.allSettled([
         fetchClusterState(),
@@ -300,20 +229,20 @@ export default function IncidentControlCenter() {
         cluster?.isDegraded &&
         cluster.chaosData?.isCrashed &&
         cluster.chaosData.activeIncident &&
-        (!incidentData?.latestAgentInc || !incidentData.latestAgentInc.incident_id)
+        (!incidentData?.incident || !incidentData.incident.incident_id)
       ) {
         const inc = cluster.chaosData.activeIncident;
         setIncident(prev => {
           if (prev && prev.incident_id) return prev;
           return {
             incident_id: inc.incidentId || `inc-chaos-${Date.now()}`,
-            service: 'ffmpeg-transcoder',
+            service: CONFIG.DEFAULT_SERVICE,
             status: 'ANALYZING',
-            raw_log: inc.rawStderr || inc.errorSignature || 'Pipeline crash detected on Port 4001. Ingesting telemetry...',
-            culprit_file: inc.failingFile || 'mock-pipeline/worker.js',
-            culprit_commit: 'HEAD~1',
+            raw_log: inc.rawStderr || inc.errorSignature || 'Pipeline crash detected. Ingesting telemetry...',
+            culprit_file: inc.failingFile || CONFIG.DEFAULT_CULPRIT_FILE,
+            culprit_commit: CONFIG.DEFAULT_CULPRIT_COMMIT,
             blast_score: 0,
-            blast_details: {},
+            blast_details: DEFAULT_BLAST_DETAILS,
             generated_diff: '',
             test_passed: false,
             test_output: '',
@@ -328,7 +257,7 @@ export default function IncidentControlCenter() {
       return { cluster, incident: incidentData };
     } catch (err) {
       console.warn('[fetchSystemOverview] System overview error:', err);
-      return null;
+      return { cluster: null, incident: null };
     }
   }, [fetchClusterState, fetchIncidentState]);
 
@@ -749,10 +678,10 @@ export default function IncidentControlCenter() {
         <IncidentFeed
           incidentId={incident?.incident_id || ''}
           status={activeStatus}
-          service={incident?.service || 'ffmpeg-transcoder'}
+          service={incident?.service || CONFIG.DEFAULT_SERVICE}
           rawLog={incident?.raw_log || ''}
           createdAt={incident?.created_at || ''}
-          culpritFile={incident?.culprit_file || 'mock-pipeline/worker.js'}
+          culpritFile={incident?.culprit_file || CONFIG.DEFAULT_CULPRIT_FILE}
           blastScore={incident?.blast_score || 0}
         />
 
@@ -853,12 +782,12 @@ export default function IncidentControlCenter() {
                   </div>
                   <h2 className="text-2xl font-bold text-white tracking-tight mt-1.5">
                     {isClusterDegraded
-                      ? `CLUSTER DEGRADED (${workerHealth?.workerPool?.activeWorkers ?? 1}/${workerHealth?.workerPool?.totalCapacity ?? 16} Workers Online)`
+                      ? `CLUSTER DEGRADED (${workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_DEGRADED_ACTIVE}/${workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY} Workers Online)`
                       : 'ALL SYSTEMS NOMINAL (0 Active Incidents)'}
                   </h2>
                   <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
                     {isClusterDegraded
-                      ? `Transcoding worker pod degradation detected on ${workerHealth?.workerPool?.cluster || 'gke-us-central1-cinema-render'} (${workerHealth?.workerPool?.nodeGroup || 'n2-highmem-16'}). Active scenario: ${workerHealth?.chaosState?.scenario || 'STREAM_ANOMALY'}. Autonomous self-healing armed.`
+                      ? `Transcoding worker pod degradation detected on ${workerHealth?.workerPool?.cluster || CONFIG.CLUSTER_NAME} (${workerHealth?.workerPool?.nodeGroup || CONFIG.NODE_GROUP}). Active scenario: ${workerHealth?.chaosState?.scenario || 'STREAM_ANOMALY'}. Autonomous self-healing armed.`
                       : 'CutGuard AI autonomous SRE agent is actively monitoring cluster telemetry streams (Grafana Loki & OpenTelemetry). Transcoding worker pods are running within normal memory and bitrate parameters.'}
                   </p>
                 </div>
@@ -887,8 +816,8 @@ export default function IncidentControlCenter() {
                 </div>
                 <div className="text-[10px] text-slate-500 font-mono">
                   {isClusterDegraded 
-                    ? `Worker Pool: ${workerHealth?.workerPool?.activeWorkers ?? 1}/${workerHealth?.workerPool?.totalCapacity ?? 16} Active` 
-                    : `100% Target Met (${workerHealth?.workerPool?.activeWorkers ?? 4}/${workerHealth?.workerPool?.totalCapacity ?? 16} Pods)`}
+                    ? `Worker Pool: ${workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_DEGRADED_ACTIVE}/${workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY} Active` 
+                    : `100% Target Met (${workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_NOMINAL_ACTIVE}/${workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY} Pods)`}
                 </div>
               </div>
               <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
@@ -915,7 +844,7 @@ export default function IncidentControlCenter() {
                   {isClusterDegraded ? 'Self-Healing Armed' : 'Active Sandbox Ready'}
                 </div>
                 <div className="text-[10px] text-slate-500 font-mono">
-                  {workerHealth?.workerPool?.cluster || 'GKE Cinema Cluster'}
+                  {workerHealth?.workerPool?.cluster || CONFIG.CLUSTER_NAME}
                 </div>
               </div>
             </div>
@@ -946,11 +875,11 @@ export default function IncidentControlCenter() {
                   {pipelineOnline ? (
                     isClusterDegraded ? (
                       <span className="text-amber-400 font-medium">
-                        Worker Degraded • Pool {workerHealth?.workerPool?.activeWorkers ?? 1}/{workerHealth?.workerPool?.totalCapacity ?? 16} ({workerHealth?.chaosState?.scenario || 'DEGRADED'})
+                        Worker Degraded • Pool {workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_DEGRADED_ACTIVE}/{workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY} ({workerHealth?.chaosState?.scenario || 'DEGRADED'})
                       </span>
                     ) : (
                       <span className="text-slate-400">
-                        ffmpeg-transcoder pool: {workerHealth?.workerPool?.activeWorkers ?? 4}/{workerHealth?.workerPool?.totalCapacity ?? 16}
+                        {CONFIG.DEFAULT_SERVICE} pool: {workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_NOMINAL_ACTIVE}/{workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY}
                       </span>
                     )
                   ) : (
@@ -959,7 +888,7 @@ export default function IncidentControlCenter() {
                 </div>
                 {workerHealth?.ffmpegVersion && (
                   <div className="text-[10px] text-slate-500 font-mono truncate" title={workerHealth.ffmpegVersion}>
-                    {workerHealth.ffmpegVersion.split(' ')[0]} {workerHealth.ffmpegVersion.split(' ')[2] || ''} • {workerHealth.workerPool?.nodeGroup || 'n2-highmem-16'}
+                    {workerHealth.ffmpegVersion.split(' ')[0]} {workerHealth.ffmpegVersion.split(' ')[2] || ''} • {workerHealth.workerPool?.nodeGroup || CONFIG.NODE_GROUP}
                   </div>
                 )}
               </div>
@@ -1020,12 +949,12 @@ export default function IncidentControlCenter() {
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   Loki Telemetry Passive Scan Stream
                 </span>
-                <span className="text-[10px] font-mono text-slate-500">Baseline Cadence • 5,000ms</span>
+                <span className="text-[10px] font-mono text-slate-500">Baseline Cadence • {CONFIG.NOMINAL_POLL_INTERVAL_MS.toLocaleString()}ms</span>
               </div>
               <div className="font-mono text-[11px] text-slate-400 space-y-1 leading-relaxed bg-black/40 p-3 rounded border border-slate-900">
-                <div className="text-emerald-400/90">[PASSIVE OBSERVER] Ingestion listener connected. Loki query: &#123;app=&quot;ffmpeg-transcoder&quot;&#125; |= &quot;CRITICAL&quot;</div>
-                <div>[STATUS] GKE transcoder pool worker-transcode-04 healthy (memory cgroup: 34% utilized)</div>
-                <div>[STATUS] AST call graph indexed. Root culprit target: mock-pipeline/worker.js</div>
+                <div className="text-emerald-400/90">[PASSIVE OBSERVER] Ingestion listener connected. Loki query: &#123;app=&quot;{CONFIG.DEFAULT_SERVICE}&quot;&#125; |= &quot;CRITICAL&quot;</div>
+                <div>[STATUS] GKE transcoder pool {CONFIG.CLUSTER_NAME} healthy (memory cgroup: nominal)</div>
+                <div>[STATUS] AST call graph indexed. Root culprit target: {CONFIG.DEFAULT_CULPRIT_FILE}</div>
                 <div className="text-cyan-400/80">[STANDBY] Awaiting incoming webhook alerts from media transcoder...</div>
               </div>
             </div>
@@ -1038,7 +967,7 @@ export default function IncidentControlCenter() {
             <div className="lg:col-span-4 space-y-6">
               <BlastRadiusRadar
                 score={incident?.blast_score || 0}
-                details={(incident?.blast_details || {}) as any}
+                details={incident?.blast_details || DEFAULT_BLAST_DETAILS}
               />
 
               {/* Live Dynamic SRE Telemetry Stats Card */}
@@ -1049,22 +978,22 @@ export default function IncidentControlCenter() {
                     Cluster Telemetry
                   </span>
                   <span className="text-[10px] font-mono text-emerald-400">
-                    {workerHealth?.workerPool?.cluster || 'gke-us-central1-cinema-render'}
+                    {workerHealth?.workerPool?.cluster || CONFIG.CLUSTER_NAME}
                   </span>
                 </div>
                 <div className="space-y-2 font-mono text-slate-400">
                   <div className="flex justify-between">
                     <span>Worker Node:</span>
                     <span className="text-slate-200 truncate">
-                      {workerHealth?.workerPool?.nodeGroup ? `${workerHealth.workerPool.nodeGroup}-pod` : 'n2-highmem-16-pod'}
+                      {workerHealth?.workerPool?.nodeGroup ? `${workerHealth.workerPool.nodeGroup}-pod` : `${CONFIG.NODE_GROUP}-pod`}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span>Worker Pool:</span>
                     <span className={isClusterDegraded ? "text-amber-400 font-semibold" : "text-emerald-400 font-semibold"}>
                       {isClusterDegraded 
-                        ? `Degraded (${workerHealth?.workerPool?.activeWorkers ?? 1}/${workerHealth?.workerPool?.totalCapacity ?? 16} Active)` 
-                        : `Nominal (${workerHealth?.workerPool?.activeWorkers ?? 4}/${workerHealth?.workerPool?.totalCapacity ?? 16} Active)`}
+                        ? `Degraded (${workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_DEGRADED_ACTIVE}/${workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY} Active)` 
+                        : `Nominal (${workerHealth?.workerPool?.activeWorkers ?? CONFIG.WORKER_NOMINAL_ACTIVE}/${workerHealth?.workerPool?.totalCapacity ?? CONFIG.WORKER_TOTAL_CAPACITY} Active)`}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -1135,7 +1064,7 @@ export default function IncidentControlCenter() {
                 </div>
 
                 <div className="text-[11px] text-slate-500 font-mono">
-                  Target: {incident?.culprit_file || 'mock-pipeline/worker.js'}
+                  Target: {incident?.culprit_file || CONFIG.DEFAULT_CULPRIT_FILE}
                 </div>
               </div>
 
@@ -1144,7 +1073,7 @@ export default function IncidentControlCenter() {
                 {activeTab === 'diff' ? (
                   <DiffViewer
                     diff={incident?.generated_diff || ''}
-                    culpritFile={incident?.culprit_file || 'mock-pipeline/worker.js'}
+                    culpritFile={incident?.culprit_file || CONFIG.DEFAULT_CULPRIT_FILE}
                     testPassed={incident?.test_passed || false}
                   />
                 ) : (

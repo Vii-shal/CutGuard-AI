@@ -13,9 +13,10 @@ import { chaosRouter, getActiveChaosScenario, getActiveIncident } from './routes
 import { rcaRouter } from './routes/rca';
 import { playerRouter } from './routes/player';
 import { setupSwagger } from './swagger';
+import { PIPELINE_CONFIG } from './config';
 
 const app = express();
-const PORT = process.env.PORT || 4001;
+const PORT = PIPELINE_CONFIG.PORT;
 
 // Middlewares
 app.use(cors());

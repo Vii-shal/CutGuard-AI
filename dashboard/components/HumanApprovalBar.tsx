@@ -2,10 +2,11 @@
 
 import React from 'react';
 import { ShieldCheck, Check, X, AlertTriangle, ArrowRight, Loader2, Sparkles } from 'lucide-react';
+import { IncidentStatus } from '../types';
 
 interface HumanApprovalBarProps {
   incidentId: string;
-  status: string;
+  status: IncidentStatus;
   onApprove: () => void;
   onReject: () => void;
   isProcessing: boolean;

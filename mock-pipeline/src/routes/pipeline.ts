@@ -13,6 +13,7 @@ import {
   PixelFormat 
 } from '../transcoder/ffmpegArgs';
 import { getActiveChaosScenario, getActiveIncident } from './chaos';
+import { PIPELINE_CONFIG, HealthResponse } from '../config';
 
 export interface TranscodeJob {
   jobId: string;
@@ -45,27 +46,31 @@ export const pipelineRouter = Router();
  *       200:
  *         description: Healthy worker status
  */
-pipelineRouter.get('/health', (_req: Request, res: Response) => {
+pipelineRouter.get('/health', (_req: Request, res: Response<HealthResponse>) => {
   const activeScenario = getActiveChaosScenario();
   const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
 
-  return res.json({
+  const responsePayload: HealthResponse = {
     status: activeScenario === 'NONE' ? 'healthy' : 'degraded',
-    service: 'cutguard-mock-transcoder',
+    service: PIPELINE_CONFIG.SERVICE_NAME,
     uptimeSeconds,
     workerPool: {
-      activeWorkers: activeScenario === 'NONE' ? 4 : 1,
-      totalCapacity: 16,
-      cluster: 'gke-us-central1-cinema-render',
-      nodeGroup: 'n2-highmem-16'
+      activeWorkers: activeScenario === 'NONE'
+        ? PIPELINE_CONFIG.WORKER_NOMINAL_ACTIVE
+        : PIPELINE_CONFIG.WORKER_DEGRADED_ACTIVE,
+      totalCapacity: PIPELINE_CONFIG.WORKER_TOTAL_CAPACITY,
+      cluster: PIPELINE_CONFIG.CLUSTER_NAME,
+      nodeGroup: PIPELINE_CONFIG.NODE_GROUP
     },
-    ffmpegVersion: 'ffmpeg version 6.1.1-cutguard-custom-gke (c) 2000-2023 the FFmpeg developers',
-    codecsSupported: ['libx264', 'libx265', 'libsvtav1'],
+    ffmpegVersion: PIPELINE_CONFIG.FFMPEG_VERSION,
+    codecsSupported: PIPELINE_CONFIG.SUPPORTED_CODECS,
     chaosState: {
       scenario: activeScenario,
       activeIncidentId: getActiveIncident()?.incidentId || null
     }
-  });
+  };
+
+  return res.json(responsePayload);
 });
 
 /**

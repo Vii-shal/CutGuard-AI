@@ -14,15 +14,16 @@ import {
   FileCode,
   ShieldAlert
 } from 'lucide-react';
+import { IncidentStatus, CONFIG } from '../types';
 
 interface IncidentFeedProps {
   incidentId: string;
-  status: string;
-  service: string;
-  rawLog: string;
-  createdAt: string;
-  culpritFile: string;
-  blastScore: number;
+  status: IncidentStatus;
+  service?: string;
+  rawLog?: string;
+  createdAt?: string;
+  culpritFile?: string;
+  blastScore?: number;
 }
 
 const STAGES = [
@@ -37,15 +38,15 @@ const STAGES = [
 export const IncidentFeed: React.FC<IncidentFeedProps> = ({
   incidentId,
   status,
-  service,
-  rawLog,
-  createdAt,
-  culpritFile,
-  blastScore
+  service = CONFIG.DEFAULT_SERVICE,
+  rawLog = '',
+  createdAt = new Date().toISOString(),
+  culpritFile = CONFIG.DEFAULT_CULPRIT_FILE,
+  blastScore = 0
 }) => {
   const [showLog, setShowLog] = React.useState(true);
 
-  const getStageIndex = (currStatus: string) => {
+  const getStageIndex = (currStatus: IncidentStatus) => {
     switch (currStatus) {
       case 'INITIALIZING':
       case 'ANALYZING': return 0;

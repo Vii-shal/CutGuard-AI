@@ -2,20 +2,17 @@
 
 import React from 'react';
 import { ShieldAlert, AlertOctagon, Network, CheckCircle, Flame, Layers } from 'lucide-react';
+import { BlastDetails, DEFAULT_BLAST_DETAILS } from '../types';
 
 interface BlastRadiusRadarProps {
   score: number;
-  details?: {
-    threat_level?: string;
-    culprit_file?: string;
-    affected_files?: Array<{ file: string; lines_of_code: number; symbols_imported: string[] }>;
-    affected_symbols?: string[];
-    affected_endpoints?: string[];
-    blast_description?: string;
-  };
+  details?: BlastDetails;
 }
 
-export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ score, details }) => {
+export const BlastRadiusRadar: React.FC<BlastRadiusRadarProps> = ({ 
+  score, 
+  details = DEFAULT_BLAST_DETAILS 
+}) => {
   const isHealthy = score === 0;
   const threatLevel = isHealthy
     ? 'NOMINAL'

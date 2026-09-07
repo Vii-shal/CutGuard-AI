@@ -7,6 +7,12 @@ import fs from 'fs';
 import path from 'path';
 import { Router, Request, Response } from 'express';
 import { logPipelineEvent } from '../logger';
+import { 
+  PIPELINE_CONFIG, 
+  ChaosInjectRequestBody, 
+  ChaosInjectResponse, 
+  ChaosStatusResponse 
+} from '../config';
 
 export type ChaosScenario = 'FFMPEG_OOM' | 'UNSUPPORTED_PIXEL_FORMAT' | 'SEGMENT_CORRUPTION' | 'NONE';
 
@@ -151,10 +157,10 @@ chaosRouter.get('/events', (_req: Request, res: Response) => {
  *         description: Invalid or unsupported chaos scenario specified
  */
 chaosRouter.post('/inject', async (req: Request, res: Response) => {
-  const reqBody = (req.body && typeof req.body === 'object') ? req.body : {};
-  const scenario: ChaosScenario = reqBody.scenario || 'UNSUPPORTED_PIXEL_FORMAT';
-  const targetWorker: string = reqBody.targetWorker || 'worker-transcode-04';
-  const severity: string = reqBody.severity || 'CRITICAL';
+  const reqBody = (req.body && typeof req.body === 'object') ? (req.body as ChaosInjectRequestBody) : {};
+  const scenario: ChaosScenario = (reqBody.scenario as ChaosScenario) || (PIPELINE_CONFIG.DEFAULT_CHAOS_SCENARIO as ChaosScenario);
+  const targetWorker: string = reqBody.targetWorker || PIPELINE_CONFIG.DEFAULT_TARGET_WORKER;
+  const severity: string = reqBody.severity || PIPELINE_CONFIG.DEFAULT_SEVERITY;
 
   if (!['FFMPEG_OOM', 'UNSUPPORTED_PIXEL_FORMAT', 'SEGMENT_CORRUPTION'].includes(scenario)) {
     return res.status(400).json({
@@ -169,7 +175,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
   const incidentId = `inc-chaos-${Math.floor(10000 + Math.random() * 90000)}`;
 
   let errorSignature = '';
-  let failingFile = 'mock-pipeline/worker.js';
+  let failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
   let exitCode = 1;
   let signal = 'SIGABRT';
   let stderrLog = '';
@@ -179,7 +185,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       errorSignature = "Invalid pixel format 'yuv422p10le' for codec 'libx264' with profile 'baseline'. Transcoding process killed with SIGSEGV (exit code 139)";
       exitCode = 139;
       signal = 'SIGSEGV';
-      failingFile = 'mock-pipeline/worker.js';
+      failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
       stderrLog = `[ERROR] [FFMPEG_ENCODE] [${randomJobId}] Fatal error: Invalid pixel format 'yuv422p10le' for codec 'libx264' with profile 'baseline'. Transcoding process killed with SIGSEGV (exit code 139).`;
       break;
 
@@ -187,7 +193,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       errorSignature = "Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)";
       exitCode = 137;
       signal = 'SIGABRT';
-      failingFile = 'mock-pipeline/worker.js';
+      failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
       stderrLog = `[FATAL] [FFMPEG_ENCODE] [${randomJobId}] CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)`;
       break;
 
@@ -195,7 +201,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       errorSignature = "Non-monotonic DTS at muxer boundary. Segment packet header corrupted (Exit 1)";
       exitCode = 1;
       signal = 'SIGTERM';
-      failingFile = 'mock-pipeline/worker.js';
+      failingFile = PIPELINE_CONFIG.DEFAULT_CULPRIT_FILE;
       stderrLog = `[ERROR] [MUXER] [${randomJobId}] Fatal error: Non-monotonic DTS in input stream. Video muxing aborted.`;
       break;
   }
@@ -261,8 +267,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
   // POST http://localhost:8000/api/incident/trigger with incident_id, errorSignature, and target file (mock-pipeline/worker.js)
   let agentDispatched = false;
   try {
-    const agentPort = process.env.AGENT_PORT || 8000;
-    const agentUrl = process.env.AGENT_URL || `http://localhost:${agentPort}`;
+    const agentUrl = PIPELINE_CONFIG.AGENT_URL;
     const webhookRes = await fetch(`${agentUrl}/api/incident/trigger`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -271,7 +276,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
         errorSignature,
         failingFile,
         target_file: failingFile,
-        service_name: 'ffmpeg-transcoder',
+        service_name: PIPELINE_CONFIG.SERVICE_NAME,
         custom_log: stderrLog,
         scenario
       })
@@ -281,12 +286,12 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       logPipelineEvent({
         level: 'info',
         stage: '[WEBHOOK]',
-        message: `Dispatched incident webhook to CutGuard SRE Agent (:8000) for ${incidentId}`,
+        message: `Dispatched incident webhook to CutGuard SRE Agent (${agentUrl}) for ${incidentId}`,
         metadata: { incidentId, agentStatus: webhookRes.status }
       });
     }
   } catch (err: any) {
-    console.warn(`[Chaos] Telemetry webhook to SRE Agent (:8000) notice: ${err?.message || err}`);
+    console.warn(`[Chaos] Telemetry webhook to SRE Agent notice: ${err?.message || err}`);
   }
 
   broadcastChaosSSE();

@@ -2,9 +2,10 @@
 
 import React from 'react';
 import { Film, Cpu, Activity, Server, ShieldCheck, ExternalLink } from 'lucide-react';
+import { IncidentStatus, CONFIG } from '../types';
 
 interface HeaderProps {
-  activeStatus: string;
+  activeStatus: IncidentStatus;
   pipelineOnline: boolean;
   agentOnline: boolean;
   pipelineUrl?: string;
@@ -18,8 +19,8 @@ export const Header: React.FC<HeaderProps> = ({
   pipelineUrl,
   agentUrl,
 }) => {
-  const effectivePipelineUrl = pipelineUrl || process.env.NEXT_PUBLIC_PIPELINE_URL || 'http://localhost:4001';
-  const effectiveAgentUrl = agentUrl || process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8000';
+  const effectivePipelineUrl = pipelineUrl || CONFIG.PIPELINE_URL;
+  const effectiveAgentUrl = agentUrl || CONFIG.AGENT_URL;
 
   const getDisplayPort = (urlStr: string, fallback: string) => {
     try {
