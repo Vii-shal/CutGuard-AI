@@ -18,6 +18,12 @@ agent_dir = str(Path(__file__).resolve().parent)
 if agent_dir not in sys.path:
     sys.path.insert(0, agent_dir)
 
+from dotenv import load_dotenv
+
+# Load sre-agent environment variables
+load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv()
+
 from agent import cutguard_agent, IncidentState
 from langgraph.types import Command
 from tools import run_isolated_sandbox_test
@@ -42,7 +48,7 @@ async def run_e2e_verification():
         "service": "ffmpeg-transcoder",
         "status": "INITIALIZING",
         "raw_log": "",
-        "culprit_file": "mock-pipeline/worker.js",
+        "culprit_file": "",
         "culprit_commit": "HEAD~1",
         "blast_score": 0,
         "blast_details": {},
@@ -77,6 +83,7 @@ async def run_e2e_verification():
     interrupt_data = graph_state.tasks[0].interrupts[0].value
     print(f"  Interrupt Payload: {interrupt_data.get('prompt')}")
     print(f"  Culprit: {interrupt_data.get('culprit_file')} | Blast Score: {interrupt_data.get('blast_score')}/100\n")
+    assert interrupt_data.get('culprit_file') == 'mock-pipeline/worker.js', f"Culprit file should be dynamically extracted from logs! Got: {interrupt_data.get('culprit_file')}"
 
     # Step 4: Simulate SRE Sign-off & Resume Workflow
     print("[Step 4] Simulating SRE Engineer approval token ('APPROVED = TRUE')...")

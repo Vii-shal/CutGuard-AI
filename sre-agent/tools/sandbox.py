@@ -1,8 +1,9 @@
 """
 CutGuard AI - Isolated Sandbox Test Runner (tools/sandbox.py)
-Executes Jest unit tests inside an isolated temporary directory.
-Applies patches exclusively inside the ephemeral sandbox without mutating
+Executes unit tests inside an isolated temporary directory.
+Applies patches strictly inside the ephemeral sandbox without mutating
 production repository files before human SRE authorization.
+Completely generic: zero hardcoded bug replacements or scenario shortcuts.
 """
 
 import os
@@ -12,12 +13,18 @@ import shutil
 import tempfile
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+
 
 def apply_diff_to_directory(diff_text: str, target_dir: str) -> bool:
     """
     Applies unified diff inside the specified sandbox directory.
+    Uses git apply first, then falls back to a structural hunk applier.
+    Strictly operates on diff headers (--- a/..., +++ b/...) without domain hardcoding.
     """
+    if not diff_text or not diff_text.strip():
+        return False
+
     patch_file = os.path.join(target_dir, ".sandbox_patch.diff")
     try:
         with open(patch_file, "w", encoding="utf-8") as f:
@@ -40,69 +47,159 @@ def apply_diff_to_directory(diff_text: str, target_dir: str) -> bool:
         if proc.returncode == 0:
             return True
 
-        return _apply_fallback_to_file(diff_text, target_dir)
+        return apply_unified_diff_structurally(diff_text, target_dir)
     except Exception as e:
-        print(f"[Sandbox Patch] Notice: {e}. Trying fallback parser.")
-        return _apply_fallback_to_file(diff_text, target_dir)
+        print(f"[Sandbox Patch] git apply notice: {e}. Trying structural hunk parser.")
+        return apply_unified_diff_structurally(diff_text, target_dir)
 
-def _apply_fallback_to_file(diff_text: str, target_dir: str) -> bool:
+
+def apply_unified_diff_structurally(diff_text: str, root_dir: str) -> bool:
     """
-    Surgically applies hunk changes directly to worker.js inside target_dir.
+    Generic structural unified diff parser and hunk applier.
+    Parses standard Git unified diff format (--- a/..., +++ b/..., @@ ... @@)
+    and applies changes line-by-line without any domain-specific hardcoding.
     """
-    worker_path = os.path.join(target_dir, "worker.js")
-    if not os.path.exists(worker_path):
-        worker_path = os.path.join(target_dir, "mock-pipeline", "worker.js")
-    if not os.path.exists(worker_path):
+    if not diff_text or not diff_text.strip():
         return False
 
-    with open(worker_path, "r", encoding="utf-8") as f:
-        file_text = f.read()
+    lines = diff_text.splitlines()
+    file_diffs = []
+    current_file_diff = None
 
-    target_bug_1 = (
-        "  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137\n"
-        "  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n"
-        "  const resolution = chunk.bitrateProfile.resolution || '1280x720';"
-    )
-    target_bug_2 = (
-        '  if (!chunk.bitrateProfile) {\n'
-        '    throw new Error("CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)");\n'
-        '  }\n\n'
-        '  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n'
-        '  const resolution = chunk.bitrateProfile.resolution || \'1280x720\';'
-    )
-    replacement = (
-        '  // Fallback to 720p_auto profile when bitrateProfile is omitted\n'
-        '  const profile = chunk.bitrateProfile || DEFAULT_PRESETS[\'720p_auto\'] || { targetBitrate: \'4500k\', resolution: \'1280x720\' };\n'
-        '  const targetBitrate = profile.targetBitrate;\n'
-        '  const resolution = profile.resolution || \'1280x720\';'
-    )
+    for line in lines:
+        if line.startswith("--- a/") or line.startswith("--- "):
+            if current_file_diff:
+                file_diffs.append(current_file_diff)
+            path = line[6:].strip() if line.startswith("--- a/") else line[4:].strip()
+            current_file_diff = {"src": path, "dest": "", "hunks": []}
+            continue
+        if line.startswith("+++ b/") or line.startswith("+++ "):
+            if current_file_diff:
+                path = line[6:].strip() if line.startswith("+++ b/") else line[4:].strip()
+                current_file_diff["dest"] = path
+            continue
+        if line.startswith("@@"):
+            if current_file_diff:
+                current_file_diff["hunks"].append({"header": line, "lines": []})
+            continue
+        if current_file_diff and current_file_diff["hunks"]:
+            current_file_diff["hunks"][-1]["lines"].append(line)
 
-    if target_bug_1 in file_text:
-        file_text = file_text.replace(target_bug_1, replacement, 1)
-    elif target_bug_1.replace('\n', '\r\n') in file_text:
-        file_text = file_text.replace(target_bug_1.replace('\n', '\r\n'), replacement.replace('\n', '\r\n'), 1)
-    elif target_bug_2 in file_text:
-        file_text = file_text.replace(target_bug_2, replacement, 1)
-    elif target_bug_2.replace('\n', '\r\n') in file_text:
-        file_text = file_text.replace(target_bug_2.replace('\n', '\r\n'), replacement.replace('\n', '\r\n'), 1)
-    elif "const targetBitrate = chunk.bitrateProfile.targetBitrate;" in file_text:
-        file_text = file_text.replace(
-            "const targetBitrate = chunk.bitrateProfile.targetBitrate;\n  const resolution = chunk.bitrateProfile.resolution || '1280x720';",
-            replacement.strip(),
-            1
-        )
-    else:
-        pattern = r'(// BUG:[^\n]*\n\s*)?const\s+targetBitrate\s*=\s*chunk\.bitrateProfile\.targetBitrate;\s*const\s+resolution\s*=\s*chunk\.bitrateProfile\.resolution[^;]*;'
-        file_text = re.sub(pattern, replacement, file_text)
+    if current_file_diff:
+        file_diffs.append(current_file_diff)
 
-    with open(worker_path, "w", encoding="utf-8") as f:
-        f.write(file_text)
+    if not file_diffs:
+        return False
 
-    return True
+    all_success = True
+
+    for fdiff in file_diffs:
+        rel_path = fdiff.get("dest") or fdiff.get("src")
+        if not rel_path:
+            continue
+
+        clean_rel = rel_path.replace('\\', '/').lstrip('/')
+        target_path = os.path.join(root_dir, clean_rel)
+        if not os.path.isfile(target_path):
+            basename = os.path.basename(clean_rel)
+            alt_path = os.path.join(root_dir, basename)
+            if os.path.isfile(alt_path):
+                target_path = alt_path
+            else:
+                found = False
+                for r, _, files in os.walk(root_dir):
+                    if basename in files:
+                        target_path = os.path.join(r, basename)
+                        found = True
+                        break
+                if not found:
+                    all_success = False
+                    continue
+
+        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+            file_content = f.read()
+
+        file_lines = file_content.splitlines()
+
+        for hunk in fdiff["hunks"]:
+            search_lines = []
+            replace_lines = []
+            for hline in hunk["lines"]:
+                if hline.startswith("-"):
+                    search_lines.append(hline[1:])
+                elif hline.startswith("+"):
+                    replace_lines.append(hline[1:])
+                elif hline.startswith(" "):
+                    search_lines.append(hline[1:])
+                    replace_lines.append(hline[1:])
+                elif hline == "":
+                    search_lines.append("")
+                    replace_lines.append("")
+
+            search_block = "\n".join(search_lines)
+            replace_block = "\n".join(replace_lines)
+
+            # 1. Exact block match
+            if search_block in "\n".join(file_lines):
+                file_text = "\n".join(file_lines)
+                file_text = file_text.replace(search_block, replace_block, 1)
+                file_lines = file_text.splitlines()
+            else:
+                # 2. Fuzzy stripped block match
+                hunk_header = hunk["header"]
+                m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", hunk_header)
+                orig_start = int(m.group(1)) - 1 if m else 0
+
+                stripped_search = [s.strip() for s in search_lines if s.strip()]
+                matched_idx = -1
+                for idx in range(len(file_lines)):
+                    chunk_candidates = [file_lines[idx + k].strip() for k in range(min(len(search_lines), len(file_lines) - idx))]
+                    candidate_sub = [c for c in chunk_candidates if c]
+                    if candidate_sub == stripped_search:
+                        matched_idx = idx
+                        break
+
+                if matched_idx != -1:
+                    file_lines = file_lines[:matched_idx] + replace_lines + file_lines[matched_idx + len(search_lines):]
+                else:
+                    print(f"[Sandbox Patch] Could not match hunk in {target_path}")
+                    all_success = False
+
+        with open(target_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(file_lines) + "\n")
+
+    return all_success
+
+
+def resolve_test_command(target_file_rel: str, pipeline_dir: str) -> List[str]:
+    """
+    Dynamically identifies the appropriate test command/spec from target_file_rel.
+    """
+    npx_bin = "npx.cmd" if sys.platform == "win32" else "npx"
+    npm_bin = "npm.cmd" if sys.platform == "win32" else "npm"
+
+    if target_file_rel:
+        clean_path = target_file_rel.replace('\\', '/')
+        base_name = Path(clean_path).stem
+        ext = Path(clean_path).suffix or ".js"
+
+        candidates = [
+            f"{base_name}.test{ext}",
+            f"{base_name}.test.js",
+            f"{base_name}.test.ts",
+            f"src/transcoder/{base_name}.test.ts",
+            f"tests/{base_name}.test{ext}"
+        ]
+        for c in candidates:
+            if os.path.exists(os.path.join(pipeline_dir, c)):
+                return [npx_bin, "jest", c, "--colors"]
+
+    return [npm_bin, "test"]
+
 
 def run_isolated_sandbox_test(
     diff_patch: Optional[str] = None,
-    target_file_rel: str = "mock-pipeline/worker.js",
+    target_file_rel: str = "",
     repo_root: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -114,46 +211,25 @@ def run_isolated_sandbox_test(
 
     pipeline_dir = os.path.join(repo_root, "mock-pipeline")
 
-    if not diff_patch:
-        cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "test"]
-        proc = subprocess.run(
-            cmd,
-            cwd=pipeline_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=40,
-            shell=(sys.platform == "win32")
-        )
-        passed = (proc.returncode == 0)
-        summary = "Jest tests passed successfully." if passed else "Jest test suite failed."
-        match = re.search(r"Tests:\s+([^\n]+)", proc.stdout + proc.stderr)
-        if match:
-            summary = f"Tests: {match.group(1)}"
-        return {
-            "passed": passed,
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "summary": summary
-        }
-
     temp_dir = tempfile.mkdtemp(prefix="cutguard_sandbox_")
     junction_path = os.path.join(temp_dir, "node_modules")
     source_nm = os.path.join(pipeline_dir, "node_modules")
 
     try:
-        for f_name in ["worker.js", "worker.test.js", "package.json"]:
-            src_f = os.path.join(pipeline_dir, f_name)
-            if os.path.exists(src_f):
-                shutil.copy2(src_f, os.path.join(temp_dir, f_name))
+        # Dynamically mirror pipeline source files (excluding node_modules, dist, .git)
+        skip_names = {'node_modules', 'dist', '.git', '.next', '__pycache__', '.venv', 'venv'}
+        if os.path.exists(pipeline_dir):
+            for item in os.listdir(pipeline_dir):
+                if item in skip_names:
+                    continue
+                s_path = os.path.join(pipeline_dir, item)
+                d_path = os.path.join(temp_dir, item)
+                if os.path.isdir(s_path):
+                    shutil.copytree(s_path, d_path, dirs_exist_ok=True)
+                elif os.path.isfile(s_path):
+                    shutil.copy2(s_path, d_path)
 
-        src_dir = os.path.join(pipeline_dir, "src")
-        if os.path.exists(src_dir):
-            shutil.copytree(src_dir, os.path.join(temp_dir, "src"), dirs_exist_ok=True)
-
+        # Link node_modules
         if os.path.exists(source_nm):
             if sys.platform == "win32":
                 subprocess.run(
@@ -164,17 +240,19 @@ def run_isolated_sandbox_test(
             else:
                 os.symlink(source_nm, junction_path)
 
-        patch_ok = apply_diff_to_directory(diff_patch, temp_dir)
-        if not patch_ok:
-            return {
-                "passed": False,
-                "exit_code": 1,
-                "stdout": "",
-                "stderr": "Patch could not be applied cleanly in sandbox temp directory.",
-                "summary": "Sandbox patching failed before test execution."
-            }
+        # Apply diff patch if provided
+        if diff_patch and diff_patch.strip():
+            patch_ok = apply_diff_to_directory(diff_patch, temp_dir)
+            if not patch_ok:
+                return {
+                    "passed": False,
+                    "exit_code": 1,
+                    "stdout": "",
+                    "stderr": "Patch could not be applied cleanly in sandbox temp directory.",
+                    "summary": "Sandbox patching failed before test execution."
+                }
 
-        cmd = ["npx.cmd" if sys.platform == "win32" else "npx", "jest", "worker.test.js", "--colors"]
+        cmd = resolve_test_command(target_file_rel, temp_dir)
         proc = subprocess.run(
             cmd,
             cwd=temp_dir,

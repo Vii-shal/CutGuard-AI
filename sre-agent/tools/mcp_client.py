@@ -76,7 +76,6 @@ class GrafanaMCPClient:
                 if error_logs:
                     latest = error_logs[-1]
                     meta = latest.get("metadata", {})
-                    failing_file = meta.get("failingFile") or "mock-pipeline/worker.js"
                     exit_code = meta.get("exitCode", 137)
                     signal = meta.get("signal", "SIGABRT")
                     raw_log = f"{latest.get('timestamp')} [{latest.get('level', 'ERROR').upper()}] {latest.get('stage')} {latest.get('message')}"
@@ -86,7 +85,6 @@ class GrafanaMCPClient:
                         "service": service_name,
                         "timestamp": latest.get("timestamp"),
                         "raw_log": raw_log,
-                        "failing_file": failing_file,
                         "exit_code": exit_code,
                         "signal": signal,
                         "incident_id": meta.get("incidentId")
@@ -104,8 +102,7 @@ class GrafanaMCPClient:
                 if active_inc:
                     raw_log = (
                         f"{active_inc.get('timestamp')} level=CRITICAL app={service_name} stage={active_inc.get('affectedPipelineStage')} "
-                        f"exitCode={active_inc.get('exitCode')} signal={active_inc.get('signal')} "
-                        f"failingFile={active_inc.get('failingFile')}\n"
+                        f"exitCode={active_inc.get('exitCode')} signal={active_inc.get('signal')}\n"
                         f"{active_inc.get('rawStderr')}"
                     )
                     return {
@@ -115,10 +112,8 @@ class GrafanaMCPClient:
                         "timestamp": active_inc.get("timestamp"),
                         "raw_log": raw_log,
                         "incident_id": active_inc.get("incidentId"),
-                        "failing_file": active_inc.get("failingFile"),
                         "exit_code": active_inc.get("exitCode", 137),
-                        "signal": active_inc.get("signal", "SIGABRT"),
-                        "scenario": active_inc.get("scenario")
+                        "signal": active_inc.get("signal", "SIGABRT")
                     }
         except Exception as e:
             pass
@@ -148,8 +143,6 @@ class GrafanaMCPClient:
                     "timestamp": now,
                     "level": "CRITICAL",
                     "message": "CRITICAL [FFmpeg Transcoder]: Undefined bitrateProfile at worker.js:32. OutOfMemory SIGABRT (Exit 137)",
-                    "culprit_file": "mock-pipeline/worker.js",
-                    "line": 32,
                     "exit_code": 137,
                     "signal": "SIGABRT"
                 }

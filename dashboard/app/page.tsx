@@ -557,24 +557,12 @@ export default function IncidentControlCenter() {
         console.warn('[Approval] Chaos reset error:', err);
       }
 
-      // 4. Retrieve enterprise RCA post-mortem report
-      let rcaReport = currentInc.post_mortem;
-      try {
-        const rcaRes = await fetch(`${PIPELINE_URL}/api/enterprise/rca/${currentInc.incident_id}`, { cache: 'no-store' });
-        if (rcaRes.ok) {
-          const rcaData = await rcaRes.json();
-          rcaReport = `# Enterprise Incident RCA & Post-Mortem\n**Incident ID:** \`${rcaData.incidentId}\`\n**Severity:** \`${rcaData.severity}\`\n**MTTR:** \`${rcaData.mttr}\`\n**Status:** **${rcaData.verificationStatus}**\n\n### Root Cause Analysis\n${rcaData.rootCauseAnalysis?.summary || 'Automated AST patch verified and hot-reloaded.'}\n\n**Trigger Mechanism:**\n${rcaData.rootCauseAnalysis?.triggerMechanism || 'Codec parameter mismatch in FFmpeg chunk encoder.'}\n\n### Applied Code Patch\n\`\`\`diff\n${rcaData.appliedPatch || currentInc.generated_diff}\n\`\`\``;
-        }
-      } catch (err) {
-        console.warn('[Approval] Synchronized verification error:', err);
-      }
-
-      // Settle UI state into RESOLVED
+      // 4. Settle UI state into RESOLVED directly using agent's autonomous telemetry & post-mortem
       setIncident(prev => prev ? ({
         ...prev,
         status: 'RESOLVED',
         human_approved: true,
-        post_mortem: rcaReport || prev.post_mortem
+        post_mortem: currentInc.post_mortem || prev.post_mortem
       }) : null);
 
       // Immediately fetch latest system overview to normalize worker pool & health badges
@@ -693,6 +681,7 @@ export default function IncidentControlCenter() {
           onReject={handleReject}
           isProcessing={isProcessingApproval}
           blastScore={incident?.blast_score || 0}
+          targetFile={incident?.culprit_file}
         />
 
         {/* Resolved Banner Action */}

@@ -263,8 +263,7 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
     }
   });
 
-  // Requirement 2: Immediately dispatch an incident webhook notification to CutGuard SRE Agent:
-  // POST http://localhost:8000/api/incident/trigger with incident_id, errorSignature, and target file (mock-pipeline/worker.js)
+  // Autonomous telemetry webhook: strictly send raw runtime telemetry
   let agentDispatched = false;
   try {
     const agentUrl = PIPELINE_CONFIG.AGENT_URL;
@@ -273,12 +272,9 @@ chaosRouter.post('/inject', async (req: Request, res: Response) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         incident_id: incidentId,
-        errorSignature,
-        failingFile,
-        target_file: failingFile,
         service_name: PIPELINE_CONFIG.SERVICE_NAME,
-        custom_log: stderrLog,
-        scenario
+        timestamp,
+        raw_logs: stderrLog
       })
     });
     agentDispatched = webhookRes.ok;

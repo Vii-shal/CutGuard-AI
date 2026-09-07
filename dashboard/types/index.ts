@@ -9,7 +9,7 @@ export const CONFIG = {
   CLUSTER_NAME: process.env.NEXT_PUBLIC_CLUSTER_NAME || 'gke-us-central1-cinema-render',
   NODE_GROUP: process.env.NEXT_PUBLIC_NODE_GROUP || 'n2-highmem-16',
   DEFAULT_SERVICE: process.env.NEXT_PUBLIC_SERVICE_NAME || 'ffmpeg-transcoder',
-  DEFAULT_CULPRIT_FILE: process.env.NEXT_PUBLIC_CULPRIT_FILE || 'mock-pipeline/worker.js',
+  DEFAULT_CULPRIT_FILE: process.env.NEXT_PUBLIC_CULPRIT_FILE || '',
   DEFAULT_CULPRIT_COMMIT: process.env.NEXT_PUBLIC_CULPRIT_COMMIT || 'HEAD~1',
   WORKER_TOTAL_CAPACITY: Number(process.env.NEXT_PUBLIC_WORKER_CAPACITY) || 16,
   WORKER_NOMINAL_ACTIVE: Number(process.env.NEXT_PUBLIC_WORKER_NOMINAL_ACTIVE) || 4,
@@ -144,7 +144,7 @@ export const DEFAULT_BLAST_DETAILS: BlastDetails = {
   culprit_file: CONFIG.DEFAULT_CULPRIT_FILE,
   downstream_dependent_count: 0,
   affected_files: [],
-  affected_symbols: ['processVideoChunk'],
+  affected_symbols: [],
   affected_endpoints: [],
   blast_description: 'All downstream cinema services nominal.'
 };

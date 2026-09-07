@@ -29,10 +29,8 @@ function processVideoChunk(chunk) {
   const codec = chunk.codec || 'h264';
   const duration = chunk.videoLengthSec || 10;
 
-  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137
-  // Fallback to 720p_auto profile when bitrateProfile is omitted
-  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || { targetBitrate: '4500k', resolution: '1280x720' };
-  const targetBitrate = profile.targetBitrate;
+  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'];
+  const targetBitrate = profile.targetBitrate || DEFAULT_PRESETS['720p_auto'].targetBitrate;
   const resolution = profile.resolution || '1280x720';
 
   return {

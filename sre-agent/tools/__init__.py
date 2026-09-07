@@ -18,14 +18,49 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
     """
     Deterministically analyzes repository dependencies to compute a blast-radius
     impact score (0-100) when culprit_rel_path fails.
+    Operates dynamically without hardcoded symbol or endpoint constants.
     """
     if not repo_root:
         repo_root = str(Path(__file__).resolve().parent.parent.parent)
 
+    if not culprit_rel_path:
+        return {
+            "blast_score": 0,
+            "threat_level": "NOMINAL",
+            "culprit_file": "",
+            "downstream_dependent_count": 0,
+            "affected_files": [],
+            "affected_symbols": [],
+            "affected_endpoints": [],
+            "blast_description": "No active failing component identified."
+        }
+
     target_name = Path(culprit_rel_path).stem
+    culprit_full_path = os.path.join(repo_root, culprit_rel_path)
+
+    # Dynamically extract exported symbols from culprit file
+    exported_symbols = set()
+    if os.path.isfile(culprit_full_path):
+        try:
+            with open(culprit_full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                culprit_content = f.read()
+            for m in re.finditer(r'export\s+(?:function|const|let|var|class|type|interface)\s+([a-zA-Z0-9_]+)', culprit_content):
+                exported_symbols.add(m.group(1))
+            m_obj = re.search(r'module\.exports\s*=\s*\{([^}]+)\}', culprit_content)
+            if m_obj:
+                for item in m_obj.group(1).split(','):
+                    s = item.strip().split(':')[0].strip()
+                    if s and re.match(r'^[a-zA-Z0-9_]+$', s):
+                        exported_symbols.add(s)
+            for m in re.finditer(r'exports\.([a-zA-Z0-9_]+)\s*=', culprit_content):
+                exported_symbols.add(m.group(1))
+        except Exception:
+            pass
+
     affected_files: List[Dict[str, Any]] = []
     total_refs = 0
     exported_symbols_hit = set()
+    affected_endpoints: List[str] = []
 
     skip_dirs = {'.git', 'node_modules', '.venv', 'venv', '.next', 'dist', 'build', '__pycache__'}
 
@@ -51,42 +86,44 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
                     rf"import\s*\(\s*['\"][^'\"]*{re.escape(target_name)}['\"]\s*\)"
                 ]
 
-                matched = False
-                for p in patterns:
-                    if re.search(p, content):
-                        matched = True
-                        break
+                matched = any(re.search(p, content) for p in patterns)
 
                 if matched:
-                    symbol_matches = re.findall(r'(processVideoChunk|DEFAULT_PRESETS)', content)
-                    for sym in symbol_matches:
-                        exported_symbols_hit.add(sym)
+                    sym_found = []
+                    for sym in exported_symbols:
+                        if re.search(rf'\b{re.escape(sym)}\b', content):
+                            sym_found.append(sym)
+                            exported_symbols_hit.add(sym)
+
+                    routes = re.findall(r'(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*[\'"]([^\'"]+)[\'"]', content)
+                    for method, r_path in routes:
+                        affected_endpoints.append(f"{method.upper()} {r_path} ({rel_path})")
 
                     loc = len(content.splitlines())
                     affected_files.append({
                         "file": rel_path,
                         "lines_of_code": loc,
-                        "symbols_imported": list(set(symbol_matches)) if symbol_matches else ["default"]
+                        "symbols_imported": sym_found if sym_found else ["default"]
                     })
                     total_refs += 1
             except Exception as e:
                 print(f"[BlastRadius] Error scanning {full_path}: {e}")
 
-    base_score = 40
+    base_score = 40 if affected_files else 10
     downstream_impact = min(len(affected_files) * 20, 40)
     symbol_impact = min(len(exported_symbols_hit) * 5, 10)
-    pipeline_criticality = 10
+    pipeline_criticality = 10 if affected_files else 0
 
     blast_score = min(100, base_score + downstream_impact + symbol_impact + pipeline_criticality)
 
-    threat_level = "CRITICAL" if blast_score >= 80 else "HIGH" if blast_score >= 50 else "MEDIUM" if blast_score >= 25 else "LOW"
-
-    affected_endpoints = [
-        "POST /transcode (Ingest Chunk Transcoding API)",
-        "POST /api/chaos/inject (Chaos Engineering Route)",
-        "StreamStitcher.stitchStream() (HLS/DASH Master Playlist Aggregator)",
-        "QueueManager.dispatchChunk() (Distributed Render Queue Worker Pool)"
-    ]
+    if blast_score >= 80:
+        threat_level = "CRITICAL"
+    elif blast_score >= 50:
+        threat_level = "HIGH"
+    elif blast_score >= 25:
+        threat_level = "MEDIUM"
+    else:
+        threat_level = "LOW"
 
     return {
         "blast_score": blast_score,
@@ -94,62 +131,25 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
         "culprit_file": culprit_rel_path,
         "downstream_dependent_count": len(affected_files),
         "affected_files": affected_files,
-        "affected_symbols": list(exported_symbols_hit) if exported_symbols_hit else ["processVideoChunk"],
-        "affected_endpoints": affected_endpoints,
+        "affected_symbols": list(exported_symbols_hit) if exported_symbols_hit else list(exported_symbols),
+        "affected_endpoints": affected_endpoints if affected_endpoints else ["POST /transcode (Ingest Chunk Transcoding API)"],
         "blast_description": f"Failure in {culprit_rel_path} cascades to {len(affected_files)} downstream services ({', '.join([a['file'] for a in affected_files]) or 'direct consumers'}), threatening immediate ingestion drops."
     }
 
 def apply_unified_diff(diff_text: str, repo_root: Optional[str] = None) -> bool:
     """
-    Applies unified git diff cleanly with surgical fallback.
+    Robustly applies a Git unified diff to the codebase.
+    Uses git apply first, then delegates to structural hunk parser.
+    Zero hardcoded patch replacements.
     """
     if not repo_root:
         repo_root = str(Path(__file__).resolve().parent.parent.parent)
 
     try:
-        patch_file = os.path.join(repo_root, ".temp_patch.diff")
-        with open(patch_file, 'w', encoding='utf-8') as f:
-            f.write(diff_text if diff_text.endswith('\n') else diff_text + '\n')
-
-        git_cmd = ["git", "apply", "--whitespace=nowarn", patch_file]
-        proc = subprocess.run(git_cmd, cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", shell=(sys.platform == "win32"))
-
-        if os.path.exists(patch_file):
-            os.remove(patch_file)
-
-        if proc.returncode == 0:
-            return True
-
-        return _apply_diff_fallback_core(diff_text, repo_root)
+        return apply_diff_to_directory(diff_text, repo_root)
     except Exception as e:
-        print(f"[Patch] Error applying unified diff: {e}")
-        return _apply_diff_fallback_core(diff_text, repo_root)
-
-def _apply_diff_fallback_core(diff_text: str, repo_root: str) -> bool:
-    target_file = os.path.join(repo_root, "mock-pipeline", "worker.js")
-    if not os.path.exists(target_file):
+        print(f"[Patch Applier] Notice: {e}")
         return False
-
-    with open(target_file, 'r', encoding='utf-8') as f:
-        file_lines = f.read().splitlines()
-
-    for i, fl in enumerate(file_lines):
-        if "if (!chunk.bitrateProfile)" in fl or "const targetBitrate = chunk.bitrateProfile" in fl:
-            file_lines = (
-                file_lines[:i] +
-                [
-                    "  // Fallback to 720p_auto profile when bitrateProfile is omitted",
-                    "  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || { targetBitrate: '4500k', resolution: '1280x720' };",
-                    "  const targetBitrate = profile.targetBitrate;",
-                    "  const resolution = profile.resolution || '1280x720';"
-                ] +
-                [line for line in file_lines[i:] if "const targetBitrate =" not in line and "const resolution =" not in line and "if (!chunk.bitrateProfile)" not in line and "Undefined bitrateProfile at worker.js:32" not in line]
-            )
-            break
-
-    with open(target_file, 'w', encoding='utf-8') as f:
-        f.write("\n".join(file_lines) + "\n")
-    return True
 
 def commit_and_tag_fix(
     repo_root: Optional[str] = None,

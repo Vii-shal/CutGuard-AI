@@ -11,6 +11,7 @@ interface HumanApprovalBarProps {
   onReject: () => void;
   isProcessing: boolean;
   blastScore: number;
+  targetFile?: string;
 }
 
 export const HumanApprovalBar: React.FC<HumanApprovalBarProps> = ({
@@ -19,7 +20,8 @@ export const HumanApprovalBar: React.FC<HumanApprovalBarProps> = ({
   onApprove,
   onReject,
   isProcessing,
-  blastScore
+  blastScore,
+  targetFile
 }) => {
   const needsApproval = status === 'NEEDS_APPROVAL';
   const isResolved = status === 'RESOLVED';
@@ -83,7 +85,7 @@ export const HumanApprovalBar: React.FC<HumanApprovalBarProps> = ({
 
             <p className="text-xs text-slate-400 mt-1 max-w-2xl">
               {needsApproval
-                ? `The cyclic self-healing agent synthesized a defensive fallback for worker.js and passed Jest unit tests. Blast Radius impact is rated at ${blastScore}/100.`
+                ? `The cyclic self-healing agent synthesized a defensive patch${targetFile ? ` for ${targetFile}` : ''} and passed isolated unit tests. Blast Radius impact is rated at ${blastScore}/100.`
                 : isResolved
                 ? "Changes committed to Git repository with autonomous tag. Transcoder worker pods recovered."
                 : "Remediation was halted. Diagnostic bundle compiled for incident responders."}

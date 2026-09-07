@@ -17,19 +17,50 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
     """
     Deterministically analyzes repository dependencies to compute a blast-radius
     impact score (0-100) when culprit_rel_path fails.
+    Operates dynamically without hardcoded symbol or endpoint constants.
     """
     if not repo_root:
-        # Default to repository root
         repo_root = str(Path(__file__).resolve().parent.parent)
 
-    target_name = Path(culprit_rel_path).stem  # e.g., 'worker'
-    target_filename = Path(culprit_rel_path).name  # e.g., 'worker.js'
+    if not culprit_rel_path:
+        return {
+            "blast_score": 0,
+            "threat_level": "NOMINAL",
+            "culprit_file": "",
+            "downstream_dependent_count": 0,
+            "affected_files": [],
+            "affected_symbols": [],
+            "affected_endpoints": [],
+            "blast_description": "No active failing component identified."
+        }
+
+    target_name = Path(culprit_rel_path).stem  # e.g., 'worker' or 'ffmpegArgs'
+    culprit_full_path = os.path.join(repo_root, culprit_rel_path)
+
+    # Dynamically extract exported symbols from culprit file
+    exported_symbols = set()
+    if os.path.isfile(culprit_full_path):
+        try:
+            with open(culprit_full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                culprit_content = f.read()
+            for m in re.finditer(r'export\s+(?:function|const|let|var|class|type|interface)\s+([a-zA-Z0-9_]+)', culprit_content):
+                exported_symbols.add(m.group(1))
+            m_obj = re.search(r'module\.exports\s*=\s*\{([^}]+)\}', culprit_content)
+            if m_obj:
+                for item in m_obj.group(1).split(','):
+                    s = item.strip().split(':')[0].strip()
+                    if s and re.match(r'^[a-zA-Z0-9_]+$', s):
+                        exported_symbols.add(s)
+            for m in re.finditer(r'exports\.([a-zA-Z0-9_]+)\s*=', culprit_content):
+                exported_symbols.add(m.group(1))
+        except Exception:
+            pass
 
     affected_files: List[Dict[str, Any]] = []
     total_refs = 0
     exported_symbols_hit = set()
+    affected_endpoints: List[str] = []
 
-    # Walk through repo and scan JS/TS files (excluding node_modules, .git, venv)
     skip_dirs = {'.git', 'node_modules', '.venv', 'venv', '.next', 'dist', 'build', '__pycache__'}
 
     for root, dirs, files in os.walk(repo_root):
@@ -41,7 +72,6 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
             full_path = os.path.join(root, file)
             rel_path = os.path.relpath(full_path, repo_root).replace('\\', '/')
             
-            # Skip the culprit file itself and tests
             if rel_path == culprit_rel_path.replace('\\', '/') or 'test' in file.lower():
                 continue
 
@@ -49,42 +79,39 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
                 with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
 
-                # Regex patterns for require and import of worker
                 patterns = [
                     rf"require\s*\(\s*['\"][^'\"]*{re.escape(target_name)}['\"]\s*\)",
                     rf"from\s*['\"][^'\"]*{re.escape(target_name)}['\"]",
                     rf"import\s*\(\s*['\"][^'\"]*{re.escape(target_name)}['\"]\s*\)"
                 ]
 
-                matched = False
-                for p in patterns:
-                    if re.search(p, content):
-                        matched = True
-                        break
+                matched = any(re.search(p, content) for p in patterns)
 
                 if matched:
-                    # Scan for symbols used
-                    symbol_matches = re.findall(r'(processVideoChunk|DEFAULT_PRESETS)', content)
-                    for sym in symbol_matches:
-                        exported_symbols_hit.add(sym)
+                    sym_found = []
+                    for sym in exported_symbols:
+                        if re.search(rf'\b{re.escape(sym)}\b', content):
+                            sym_found.append(sym)
+                            exported_symbols_hit.add(sym)
+
+                    routes = re.findall(r'(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*[\'"]([^\'"]+)[\'"]', content)
+                    for method, r_path in routes:
+                        affected_endpoints.append(f"{method.upper()} {r_path} ({rel_path})")
 
                     loc = len(content.splitlines())
                     affected_files.append({
                         "file": rel_path,
                         "lines_of_code": loc,
-                        "symbols_imported": list(set(symbol_matches)) if symbol_matches else ["default"]
+                        "symbols_imported": sym_found if sym_found else ["default"]
                     })
                     total_refs += 1
             except Exception as e:
                 print(f"[BlastRadius] Error scanning {full_path}: {e}")
 
-    # Compute deterministic blast radius score (0-100)
-    # Factors: base impact of core transcoding worker (40), downstream services hit (20 each up to 40),
-    # exported symbol count (10), critical cinema pipeline weighting (10)
-    base_score = 40
+    base_score = 40 if affected_files else 10
     downstream_impact = min(len(affected_files) * 20, 40)
     symbol_impact = min(len(exported_symbols_hit) * 5, 10)
-    pipeline_criticality = 10  # Transcoding chunk failures abort entire video output
+    pipeline_criticality = 10 if affected_files else 0
 
     blast_score = min(100, base_score + downstream_impact + symbol_impact + pipeline_criticality)
 
@@ -97,31 +124,24 @@ def calculate_blast_radius(culprit_rel_path: str, repo_root: Optional[str] = Non
     else:
         threat_level = "LOW"
 
-    affected_endpoints = [
-        "POST /transcode (Ingest Chunk Transcoding API)",
-        "POST /simulate-crash (Telemetry Injection Endpoint)",
-        "StreamStitcher.stitchStream() (HLS/DASH Master Playlist Aggregator)",
-        "QueueManager.dispatchChunk() (Distributed Render Queue Worker Pool)"
-    ]
-
     return {
         "blast_score": blast_score,
         "threat_level": threat_level,
         "culprit_file": culprit_rel_path,
         "downstream_dependent_count": len(affected_files),
         "affected_files": affected_files,
-        "affected_symbols": list(exported_symbols_hit) if exported_symbols_hit else ["processVideoChunk"],
-        "affected_endpoints": affected_endpoints,
+        "affected_symbols": list(exported_symbols_hit) if exported_symbols_hit else list(exported_symbols),
+        "affected_endpoints": affected_endpoints if affected_endpoints else ["POST /transcode (Ingest Chunk Transcoding API)"],
         "blast_description": f"Failure in {culprit_rel_path} cascades to {len(affected_files)} downstream services ({', '.join([a['file'] for a in affected_files]) or 'direct consumers'}), threatening immediate ingestion drops."
     }
 
 def run_isolated_sandbox_test(
     diff_patch: Optional[str] = None,
-    target_file_rel: str = "mock-pipeline/worker.js",
+    target_file_rel: str = "",
     repo_root: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Executes Jest unit tests in a zero-mutation isolated sandbox.
+    Executes unit tests in a zero-mutation isolated sandbox.
     Delegates to tools.sandbox to ensure production repository files are never mutated.
     """
     try:
@@ -129,7 +149,6 @@ def run_isolated_sandbox_test(
         return _sandbox_run(diff_patch=diff_patch, target_file_rel=target_file_rel, repo_root=repo_root)
     except Exception as e:
         print(f"[Sandbox Delegation] Notice: {e}. Executing inline fallback.")
-        # Inline fallback
         if not repo_root:
             repo_root = str(Path(__file__).resolve().parent.parent)
         pipeline_dir = os.path.join(repo_root, "mock-pipeline")
@@ -147,145 +166,18 @@ def run_isolated_sandbox_test(
 def apply_unified_diff(diff_text: str, repo_root: Optional[str] = None) -> bool:
     """
     Robustly applies a Git unified diff to the codebase.
-    Handles unified diff chunks (+, -, and context lines).
+    Uses git apply first, then delegates to structural hunk parser.
+    Zero hardcoded patch replacements.
     """
     if not repo_root:
         repo_root = str(Path(__file__).resolve().parent.parent)
 
     try:
-        # First, try standard git apply if git is available
-        patch_file = os.path.join(repo_root, ".temp_patch.diff")
-        with open(patch_file, 'w', encoding='utf-8') as f:
-            f.write(diff_text if diff_text.endswith('\n') else diff_text + '\n')
-
-        git_cmd = ["git", "apply", "--whitespace=nowarn", patch_file]
-        proc = subprocess.run(
-            git_cmd,
-            cwd=repo_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            shell=(sys.platform == "win32")
-        )
-
-        if os.path.exists(patch_file):
-            os.remove(patch_file)
-
-        if proc.returncode == 0:
-            print("[Patch] Applied cleanly via git apply.")
-            return True
-
-        # Fallback manual hunk applier if git apply fails due to line ending / whitespace nuances
-        print(f"[Patch] git apply notice: {proc.stderr.strip()}. Attempting fallback hunk parser...")
-        return _apply_diff_fallback(diff_text, repo_root)
-
+        from tools.sandbox import apply_diff_to_directory
+        return apply_diff_to_directory(diff_text, repo_root)
     except Exception as e:
-        print(f"[Patch] Error applying unified diff: {e}")
-        return _apply_diff_fallback(diff_text, repo_root)
-
-def _apply_diff_fallback(diff_text: str, repo_root: str) -> bool:
-    """
-    Fallback parser for unified diff when git apply is unavailable or strict.
-    """
-    lines = diff_text.splitlines()
-    target_file = None
-    hunks = []
-    current_hunk = None
-
-    for line in lines:
-        if line.startswith("+++ b/"):
-            target_file = line[6:].strip()
-            continue
-        elif line.startswith("+++ ") and not target_file:
-            target_file = line[4:].strip().lstrip("b/")
-            continue
-
-        if line.startswith("@@"):
-            if current_hunk:
-                hunks.append(current_hunk)
-            current_hunk = {"header": line, "lines": []}
-            continue
-
-        if current_hunk is not None:
-            current_hunk["lines"].append(line)
-
-    if current_hunk:
-        hunks.append(current_hunk)
-
-    if not target_file:
-        # Assume worker.js if not parsed
-        target_file = "mock-pipeline/worker.js"
-
-    full_target_path = os.path.join(repo_root, target_file)
-    if not os.path.exists(full_target_path):
-        # Check in mock-pipeline
-        alt = os.path.join(repo_root, "mock-pipeline", os.path.basename(target_file))
-        if os.path.exists(alt):
-            full_target_path = alt
-        else:
-            print(f"[Patch Fallback] Target file not found: {full_target_path}")
-            return False
-
-    with open(full_target_path, 'r', encoding='utf-8') as f:
-        file_lines = f.read().splitlines()
-
-    for hunk in hunks:
-        hunk_header = hunk["header"]
-        # Format @@ -start,len +start,len @@
-        m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", hunk_header)
-        if not m:
-            continue
-
-        orig_start = int(m.group(1)) - 1
-        
-        # Build search block (context + removed lines) and replacement block (context + added lines)
-        search_block = []
-        replace_block = []
-
-        for hline in hunk["lines"]:
-            if hline.startswith("-"):
-                search_block.append(hline[1:])
-            elif hline.startswith("+"):
-                replace_block.append(hline[1:])
-            elif hline.startswith(" "):
-                search_block.append(hline[1:])
-                replace_block.append(hline[1:])
-            elif hline == "":
-                search_block.append("")
-                replace_block.append("")
-
-        file_text = "\n".join(file_lines)
-        search_text = "\n".join(search_block)
-        replace_text = "\n".join(replace_block)
-
-        if search_text in file_text:
-            file_text = file_text.replace(search_text, replace_text, 1)
-            file_lines = file_text.splitlines()
-        else:
-            # Flexible line matching
-            print(f"[Patch Fallback] Precise hunk block not matched directly, applying surgical replacement.")
-            # Search for culprit line
-            for i, fl in enumerate(file_lines):
-                if "if (!chunk.bitrateProfile)" in fl or "const targetBitrate = chunk.bitrateProfile" in fl:
-                    # Replace culprit logic with fallback safe profile
-                    file_lines = (
-                        file_lines[:i] +
-                        [
-                            "  // Patched by CutGuard AI: Fallback to 720p_auto when bitrateProfile is omitted",
-                            "  const profile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'] || { targetBitrate: '4500k', resolution: '1280x720' };",
-                            "  const targetBitrate = profile.targetBitrate;",
-                            "  const resolution = profile.resolution || '1280x720';"
-                        ] +
-                        [line for line in file_lines[i:] if "const targetBitrate =" not in line and "const resolution =" not in line and "if (!chunk.bitrateProfile)" not in line and "Undefined bitrateProfile at worker.js:32" not in line]
-                    )
-                    break
-
-    with open(full_target_path, 'w', encoding='utf-8') as f:
-        f.write("\n".join(file_lines) + "\n")
-
-    return True
+        print(f"[Patch Applier] Notice: {e}")
+        return False
 
 def commit_and_tag_fix(
     repo_root: Optional[str] = None,

@@ -47,19 +47,17 @@ GLOBAL_WEBSOCKETS: List[WebSocket] = []
 
 class TriggerRequest(BaseModel):
     service_name: Optional[str] = "ffmpeg-transcoder"
+    raw_logs: Optional[str] = None
     custom_log: Optional[str] = None
     incident_id: Optional[str] = None
-    errorSignature: Optional[str] = None
-    target_file: Optional[str] = None
-    failing_file: Optional[str] = None
-    scenario: Optional[str] = None
+    timestamp: Optional[str] = None
 
 
 class ResumeRequest(BaseModel):
     approved: Optional[bool] = None
     action: Optional[str] = None
     approver: Optional[str] = "Lead SRE Engineer"
-    notes: Optional[str] = "Approved automated 720p_auto fallback patch."
+    notes: Optional[str] = "Approved autonomous patch after sandbox verification."
 
 
 async def broadcast_incident_update(incident_id: str, data: Dict[str, Any]):
@@ -152,8 +150,8 @@ async def trigger_incident(req: TriggerRequest, background_tasks: BackgroundTask
     """
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     incident_id = req.incident_id or f"inc-{timestamp_str}-{uuid.uuid4().hex[:4]}"
-    raw_log = req.custom_log or req.errorSignature or ""
-    culprit_file = req.target_file or req.failing_file or "mock-pipeline/worker.js"
+    raw_log = req.raw_logs or req.custom_log or ""
+    culprit_file = ""  # Discovered dynamically by triage node via stack trace analysis
 
     initial_record = {
         "incident_id": incident_id,

@@ -11,7 +11,7 @@ interface DiffViewerProps {
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
   diff,
-  culpritFile = 'mock-pipeline/worker.js',
+  culpritFile = 'Identified Component',
   testPassed = false
 }) => {
   const [copied, setCopied] = React.useState(false);
