@@ -22,7 +22,7 @@ load_dotenv()
 
 # Import LangGraph agent and types
 from langgraph.types import Command
-from agent import cutguard_agent, IncidentState
+from agent import cutguard_agent, IncidentState, _get_gemini_client, GENAI_AVAILABLE, LAST_GEMINI_ERROR
 
 app = FastAPI(
     title="CutGuard AI - Autonomous SRE Agent API",
@@ -134,12 +134,19 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
 
 @app.get("/api/health")
 async def health_check():
+    client = _get_gemini_client()
+    raw_key = os.getenv("GEMINI_API_KEY", "")
+    clean_key = raw_key.strip().strip("'\"")
     return {
         "status": "online",
         "agent": "CutGuard AI",
         "version": "1.0.0",
         "grafana_mcp": "configured" if os.getenv("GRAFANA_URL") else "simulation_mode",
-        "gemini_api": "active" if os.getenv("GEMINI_API_KEY") else "deterministic_fallback"
+        "gemini_api": "active" if clean_key else "missing_key",
+        "genai_sdk_installed": GENAI_AVAILABLE,
+        "client_initialized": bool(client),
+        "last_gemini_error": LAST_GEMINI_ERROR,
+        "key_length": len(clean_key)
     }
 
 

@@ -58,21 +58,35 @@ class IncidentState(TypedDict):
     error_message: Optional[str]
 
 
+LAST_GEMINI_ERROR = None
+
+
 def _get_gemini_client():
+    global LAST_GEMINI_ERROR
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         load_dotenv(Path(__file__).resolve().parent / ".env")
         api_key = os.getenv("GEMINI_API_KEY")
-    if api_key and GENAI_AVAILABLE:
-        try:
-            return genai.Client(api_key=api_key)
-        except Exception as e:
-            print(f"[Gemini] Initialization notice: {e}")
-    else:
-        if not api_key:
-            print("[Gemini] Notice: GEMINI_API_KEY is not set.")
-        if not GENAI_AVAILABLE:
-            print("[Gemini] Notice: google-genai is not installed.")
+    if api_key:
+        api_key = api_key.strip().strip("'\"")
+    if not api_key:
+        LAST_GEMINI_ERROR = "GEMINI_API_KEY is not set or empty in environment"
+        print("[Gemini] Notice: GEMINI_API_KEY is not set.")
+        return None
+    if not GENAI_AVAILABLE:
+        LAST_GEMINI_ERROR = "google-genai package is not installed (ImportError)"
+        print("[Gemini] Notice: google-genai is not installed.")
+        return None
+    try:
+        client = genai.Client(api_key=api_key)
+        LAST_GEMINI_ERROR = None
+        return client
+    except Exception as e:
+        LAST_GEMINI_ERROR = f"genai.Client init error: {e}"
+        print(f"[Gemini] Initialization notice: {e}")
+        return None
+
+
 def get_effective_pipeline_url() -> str:
     env_url = os.getenv("PIPELINE_URL", "").strip().rstrip('/')
     if env_url:
@@ -359,6 +373,20 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
 
     test_passed = sandbox_result.get("passed", False)
     test_output = sandbox_result.get("summary", "") + "\n" + sandbox_result.get("stdout", "") + sandbox_result.get("stderr", "")
+
+    if not generated_diff:
+        diag = []
+        if not client:
+            diag.append(f"Gemini client unavailable ({LAST_GEMINI_ERROR or 'client init failed'})")
+        if not culprit_file:
+            diag.append("Target culprit file could not be parsed")
+        if not current_code:
+            diag.append(f"Source code could not be loaded for {culprit_file or 'component'}")
+        if client and culprit_file and current_code:
+            diag.append("Gemini model response did not produce a unified diff")
+        diag_msg = f"[Synthesis Note] {'; '.join(diag)}"
+        print(f"[SANDBOX PATCH NODE] {diag_msg}")
+        test_output = f"{diag_msg}\n{test_output}"
 
     print(f"[SANDBOX PATCH NODE] Test result: {'PASSED' if test_passed else 'FAILED'}")
 
