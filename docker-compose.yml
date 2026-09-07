@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  mock-pipeline:
+    build:
+      context: ./mock-pipeline
+      dockerfile: Dockerfile
+    container_name: cutguard-mock-pipeline
+    ports:
+      - "4001:4001"
+    environment:
+      - PORT=4001
+      - AGENT_URL=http://sre-agent:8000
+      - DASHBOARD_URL=http://localhost:3000
+    networks:
+      - cutguard-net
+
+  sre-agent:
+    build:
+      context: ./sre-agent
+      dockerfile: Dockerfile
+    container_name: cutguard-sre-agent
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - AGENT_PORT=8000
+      - PIPELINE_URL=http://mock-pipeline:4001
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GRAFANA_URL=${GRAFANA_URL:-}
+      - GRAFANA_SERVICE_ACCOUNT_TOKEN=${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}
+    depends_on:
+      - mock-pipeline
+    networks:
+      - cutguard-net
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_PIPELINE_URL=http://localhost:4001
+        - NEXT_PUBLIC_AGENT_URL=http://localhost:8000
+    container_name: cutguard-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NEXT_PUBLIC_PIPELINE_URL=http://localhost:4001
+      - NEXT_PUBLIC_AGENT_URL=http://localhost:8000
+      - AGENT_URL=http://sre-agent:8000
+    depends_on:
+      - sre-agent
+      - mock-pipeline
+    networks:
+      - cutguard-net
+
+networks:
+  cutguard-net:
+    driver: bridge

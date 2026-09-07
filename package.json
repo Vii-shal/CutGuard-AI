@@ -3,17 +3,24 @@
   "version": "1.0.0",
   "description": "CutGuard AI — Autonomous Video Transcoding Incident SRE Agent (Google Cloud + Grafana Track)",
   "scripts": {
+    "dev:all": "node scripts/dev-all.js",
+    "dev": "node scripts/dev-all.js",
+    "start": "node scripts/dev-all.js",
+    "install:all": "npm --prefix mock-pipeline install && npm --prefix dashboard install",
     "install:pipeline": "npm --prefix mock-pipeline install",
     "install:dashboard": "npm --prefix dashboard install",
     "start:pipeline": "npm --prefix mock-pipeline run dev",
     "start:pipeline:dist": "npm --prefix mock-pipeline run start",
     "start:dashboard": "npm --prefix dashboard run dev",
-    "start:agent": "cd sre-agent && .\\.venv\\Scripts\\python.exe server.py",
+    "start:agent": "node -e \"require('./scripts/dev-all.js')\"",
     "build:pipeline": "npm --prefix mock-pipeline run build",
     "build:dashboard": "npm --prefix dashboard run build",
     "test:pipeline": "npm --prefix mock-pipeline test",
     "test:transcoder": "npm --prefix mock-pipeline run test:transcoder",
-    "test:agent": "cd sre-agent && .\\.venv\\Scripts\\python.exe test_e2e.py"
+    "test:agent": "cd sre-agent && .\\.venv\\Scripts\\python.exe test_e2e.py",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "keywords": [
     "sre-agent",

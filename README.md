@@ -99,34 +99,61 @@ CutGuard_AI/
 
 ## Quickstart Guide
 
-### 1. One-Click Launch (Windows)
+### Option 1: Single Root Orchestrator (Recommended — All Platforms)
+Run a single command from the project root to start all three tiers concurrently with unified colored logs and graceful shutdown:
+```bash
+npm run dev:all
+```
+*(Alternative shortcuts: `npm run dev` or `npm start`)*
+
+This launches:
+- **Mock Media Pipeline Worker:** `http://localhost:4001`
+- **FastAPI SRE Agent & LangGraph API:** `http://localhost:8000`
+- **Next.js Mission Control Console:** `http://localhost:3000`
+
+---
+
+### Option 2: Docker Compose (Containerized Multi-Tier)
+Run the entire CutGuard AI architecture in isolated containers with a single command:
+```bash
+docker compose up --build
+```
+*(Or `docker-compose up --build`)*
+
+To stop all containers:
+```bash
+docker compose down
+```
+
+---
+
+### Option 3: One-Click Launch (Windows Batch Script)
 Double-click `start-all.bat` or run in terminal:
 ```cmd
 start-all.bat
 ```
-This spawns:
-- **Mock Pipeline Worker:** `http://localhost:4001`
-- **FastAPI SRE Agent & LangGraph API:** `http://localhost:8000`
-- **Next.js Ops Console:** `http://localhost:3000`
 
-### 2. Manual Startup
-**Mock Pipeline:**
+---
+
+### Option 4: Manual Step-by-Step Startup
+**1. Mock Media Pipeline (Port 4001):**
 ```bash
 cd mock-pipeline
 npm install
-node worker.js
+npm run dev
 ```
 
-**SRE Agent:**
+**2. Autonomous SRE Agent (Port 8000):**
 ```bash
 cd sre-agent
-# Create & activate virtual environment (already preconfigured in .venv)
-.venv\Scripts\activate
+# Activate preconfigured virtual environment:
+# On Windows: .venv\Scripts\activate
+# On Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 python server.py
 ```
 
-**Dashboard:**
+**3. Mission Control Dashboard (Port 3000):**
 ```bash
 cd dashboard
 npm install
@@ -139,7 +166,7 @@ Open your browser at `http://localhost:3000`.
 
 ## Configuration & Environment Variables
 
-Copy `sre-agent/.env.example` to `sre-agent/.env`:
+Copy `sre-agent/.env.example` to `sre-agent/.env` (and optionally `dashboard/.env.example` to `dashboard/.env.local`):
 ```ini
 # Google Gemini API Key (Optional: CutGuard uses deterministic fallback if key is omitted)
 GEMINI_API_KEY=your_gemini_api_key_here
@@ -148,9 +175,12 @@ GEMINI_API_KEY=your_gemini_api_key_here
 GRAFANA_URL=http://localhost:3000
 GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_your_grafana_token_here
 
+# Base URLs & Endpoints
 PIPELINE_PORT=4001
 AGENT_PORT=8000
 DASHBOARD_PORT=3000
+NEXT_PUBLIC_PIPELINE_URL=http://localhost:4001
+NEXT_PUBLIC_AGENT_URL=http://localhost:8000
 ```
 
 > **Note for Judges:** CutGuard AI is built with resilience. If live Grafana credentials or Gemini API keys are omitted, the system seamlessly uses realistic GKE cinema crash logs and deterministic AST patching so you can experience the end-to-end flow immediately with zero setup friction!
@@ -159,7 +189,7 @@ DASHBOARD_PORT=3000
 
 ## Step-by-Step Incident Walkthrough
 
-1. **Trigger Incident:** In the Dashboard, click **"Simulate Pipeline Crash"**.
+1. **Trigger Incident:** In the Video Stream Player (`http://localhost:4001/player`) click **"Simulate Stream Failure"**, or dispatch via Swagger API (`http://localhost:4001/docs`).
 2. **Grafana Ingestion:** The agent calls `mcp_client.py` to query Loki logs for `{app="ffmpeg-transcoder"} |= "CRITICAL"`.
 3. **Gemini Triage:** Gemini 2.5 Flash analyzes the stack trace and isolates the crash to `mock-pipeline/worker.js:32`.
 4. **Blast Radius Analysis:** Static call-graph analysis identifies downstream services (`queue-manager.js`, `stream-stitcher.js`) and calculates an 80/100 Threat Score.
