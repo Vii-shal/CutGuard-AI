@@ -65,32 +65,44 @@ class GrafanaMCPClient:
 
         # Priority 2: Query mock-pipeline in-memory ring buffer at GET /api/logs
         pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
-        pipeline_url = os.getenv("PIPELINE_URL", f"http://localhost:{pipeline_port}")
-        try:
-            import requests
-            logs_res = requests.get(f"{pipeline_url}/api/logs?limit=50", timeout=1.5)
-            if logs_res.status_code == 200:
-                logs_data = logs_res.json()
-                all_logs = logs_data.get("logs", [])
-                error_logs = [l for l in all_logs if str(l.get("level")).lower() in ["error", "fatal", "critical"]]
-                if error_logs:
-                    latest = error_logs[-1]
-                    meta = latest.get("metadata", {})
-                    exit_code = meta.get("exitCode", 137)
-                    signal = meta.get("signal", "SIGABRT")
-                    raw_log = f"{latest.get('timestamp')} [{latest.get('level', 'ERROR').upper()}] {latest.get('stage')} {latest.get('message')}"
-                    return {
-                        "source": "mock-pipeline-api-logs",
-                        "query": logql_query,
-                        "service": service_name,
-                        "timestamp": latest.get("timestamp"),
-                        "raw_log": raw_log,
-                        "exit_code": exit_code,
-                        "signal": signal,
-                        "incident_id": meta.get("incidentId")
-                    }
-        except Exception as e:
-            pass
+        env_url = os.getenv("PIPELINE_URL", "").strip().rstrip('/')
+        if env_url:
+            pipeline_url = env_url
+        elif os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_INSTANCE_ID"):
+            pipeline_url = "https://cutguard-media-stream.onrender.com"
+        else:
+            pipeline_url = f"http://localhost:{pipeline_port}"
+
+        candidate_urls = [pipeline_url]
+        if "https://cutguard-media-stream.onrender.com" not in candidate_urls:
+            candidate_urls.append("https://cutguard-media-stream.onrender.com")
+
+        for p_url in candidate_urls:
+            try:
+                import requests
+                logs_res = requests.get(f"{p_url}/api/logs?limit=50", timeout=2.5)
+                if logs_res.status_code == 200:
+                    logs_data = logs_res.json()
+                    all_logs = logs_data.get("logs", [])
+                    error_logs = [l for l in all_logs if str(l.get("level")).lower() in ["error", "fatal", "critical"]]
+                    if error_logs:
+                        latest = error_logs[-1]
+                        meta = latest.get("metadata", {})
+                        exit_code = meta.get("exitCode", 137)
+                        signal = meta.get("signal", "SIGABRT")
+                        raw_log = f"{latest.get('timestamp')} [{latest.get('level', 'ERROR').upper()}] {latest.get('stage')} {latest.get('message')}"
+                        return {
+                            "source": "mock-pipeline-api-logs",
+                            "query": logql_query,
+                            "service": service_name,
+                            "raw_log": raw_log,
+                            "structured_logs": error_logs[-10:],
+                            "exit_code": exit_code,
+                            "signal": signal,
+                            "timestamp": latest.get("timestamp", datetime.now(timezone.utc).isoformat())
+                        }
+            except Exception as e:
+                print(f"[Mock Pipeline Logs] Notice ({p_url}): {e}")
 
         # Priority 3: Check live mock-pipeline telemetry stream if available on /api/chaos/status
         try:

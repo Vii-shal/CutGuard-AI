@@ -73,7 +73,13 @@ def _get_gemini_client():
             print("[Gemini] Notice: GEMINI_API_KEY is not set.")
         if not GENAI_AVAILABLE:
             print("[Gemini] Notice: google-genai is not installed.")
-    return None
+def get_effective_pipeline_url() -> str:
+    env_url = os.getenv("PIPELINE_URL", "").strip().rstrip('/')
+    if env_url:
+        return env_url
+    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_INSTANCE_ID"):
+        return "https://cutguard-media-stream.onrender.com"
+    return f"http://localhost:{os.getenv('PIPELINE_PORT', 4001)}"
 
 
 def _resolve_relative_repo_file(file_path: str, repo_root: Optional[str] = None) -> Optional[str]:
@@ -273,16 +279,21 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
 
     # Remote pipeline fallback for distributed microservice deployments (e.g. Render)
     if not current_code and culprit_file:
-        pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
-        pipeline_url = os.getenv("PIPELINE_URL", f"http://localhost:{pipeline_port}").rstrip('/')
-        try:
-            import requests
-            res = requests.get(f"{pipeline_url}/api/file?path={culprit_file}", timeout=3.5)
-            if res.status_code == 200:
-                current_code = res.json().get("content", "")
-                print(f"[SANDBOX PATCH NODE] Successfully fetched {culprit_file} remotely from {pipeline_url}")
-        except Exception as e:
-            print(f"[SANDBOX PATCH NODE] Remote file fetch notice: {e}")
+        pipeline_url = get_effective_pipeline_url()
+        candidate_urls = [pipeline_url]
+        if "https://cutguard-media-stream.onrender.com" not in candidate_urls:
+            candidate_urls.append("https://cutguard-media-stream.onrender.com")
+
+        for p_url in candidate_urls:
+            try:
+                import requests
+                res = requests.get(f"{p_url}/api/file?path={culprit_file}", timeout=5.0)
+                if res.status_code == 200:
+                    current_code = res.json().get("content", "")
+                    print(f"[SANDBOX PATCH NODE] Successfully fetched {culprit_file} remotely from {p_url}")
+                    break
+            except Exception as e:
+                print(f"[SANDBOX PATCH NODE] Remote file fetch notice ({p_url}): {e}")
 
     # Fallback to local copy in sre-agent directory
     if not current_code and culprit_file:
@@ -524,22 +535,28 @@ CutGuard AI autonomously ingested telemetry, resolved the failing file (`{culpri
     print("[DEPLOY NODE] Deployment complete. RCA Post-Mortem compiled.")
 
     # Notify mock-pipeline to sync state
-    pipeline_port = int(os.getenv("PIPELINE_PORT", 4001))
-    pipeline_url = os.getenv("PIPELINE_URL", f"http://localhost:{pipeline_port}")
-    try:
-        import requests
-        requests.post(
-            f"{pipeline_url}/api/patch/apply",
-            json={
-                "patch": diff,
-                "incidentId": state.get("incident_id"),
-                "operatorSignOff": True
-            },
-            timeout=2.0
-        )
-        print(f"[DEPLOY NODE] Notified mock-pipeline at {pipeline_url}. Pipeline hot-patch applied.")
-    except Exception as e:
-        print(f"[DEPLOY NODE] mock-pipeline sync notice: {e}")
+    pipeline_url = get_effective_pipeline_url()
+    candidate_urls = [pipeline_url]
+    if "https://cutguard-media-stream.onrender.com" not in candidate_urls:
+        candidate_urls.append("https://cutguard-media-stream.onrender.com")
+
+    for p_url in candidate_urls:
+        try:
+            import requests
+            res = requests.post(
+                f"{p_url}/api/patch/apply",
+                json={
+                    "patch": diff,
+                    "incidentId": state.get("incident_id"),
+                    "operatorSignOff": True
+                },
+                timeout=4.0
+            )
+            if res.status_code == 200:
+                print(f"[DEPLOY NODE] Notified mock-pipeline at {p_url}. Pipeline hot-patch applied.")
+                break
+        except Exception as e:
+            print(f"[DEPLOY NODE] mock-pipeline sync notice ({p_url}): {e}")
 
     return {
         "post_mortem": post_mortem,
