@@ -313,14 +313,16 @@ async function handleChaosInject(req: Request, res: Response) {
     for (const cp of candidatePaths) {
       if (fs.existsSync(cp)) {
         let content = fs.readFileSync(cp, 'utf-8');
-        if (content.includes("DEFAULT_PRESETS['720p_auto']")) {
-          const bugLines = "  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n  const resolution = chunk.bitrateProfile.resolution || '1280x720';";
-          content = content.replace(
-            /\s*\/\/ Fallback to 720p_auto profile when bitrateProfile is omitted[\s\S]*?const resolution = profile\.resolution \|\| '1280x720';/,
+        if (content.includes("DEFAULT_PRESETS['720p_auto']") || content.includes("bitrateProfile")) {
+          const bugLines = "  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137\n  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n  const resolution = chunk.bitrateProfile.resolution || '1280x720';";
+          const replaced = content.replace(
+            /\s*(?:\/\/\s*Fallback to 720p_auto profile[^\n]*|const\s+(?:bitrateProfile|profile)\s*=)[\s\S]*?const resolution = [^\n]+;/,
             "\n" + bugLines
           );
-          fs.writeFileSync(cp, content, 'utf-8');
-          break;
+          if (replaced !== content) {
+            fs.writeFileSync(cp, replaced, 'utf-8');
+            break;
+          }
         }
       }
     }

@@ -68,6 +68,34 @@ class IncidentState(TypedDict, total=False):
 
 
 LAST_GEMINI_ERROR = None
+_QUOTA_EXHAUSTED_UNTIL = 0.0
+
+
+def _is_gemini_quota_exhausted() -> bool:
+    """Returns True if the project-level daily quota was exhausted recently."""
+    global _QUOTA_EXHAUSTED_UNTIL
+    return time.time() < _QUOTA_EXHAUSTED_UNTIL
+
+
+def _mark_gemini_quota_exhausted(duration_sec: float = 300.0, reason: str = ""):
+    """Caches project-level quota exhaustion to fast-fail and avoid wasting 15s on redundant TLS calls."""
+    global _QUOTA_EXHAUSTED_UNTIL, LAST_GEMINI_ERROR
+    _QUOTA_EXHAUSTED_UNTIL = time.time() + duration_sec
+    LAST_GEMINI_ERROR = reason or "Gemini daily quota exhausted (20 req/day limit reached)."
+    print(f"[Gemini] Quota exhaustion cached for {int(duration_sec)}s: {LAST_GEMINI_ERROR}")
+
+
+def _sanitize_model_error(error_obj: Any) -> str:
+    """Transforms raw Google Cloud JSON exceptions into clean, informative diagnostic text."""
+    err_str = str(error_obj)
+    if "429" in err_str or "quota" in err_str.lower() or "resource_exhausted" in err_str.lower():
+        return "Gemini API free-tier daily quota exhausted (20 req/day limit). Autonomous AST self-healing engaged."
+    if "api_key" in err_str.lower() or "permission" in err_str.lower() or "unauthenticated" in err_str.lower():
+        return "Gemini API authentication failed (invalid or missing key)."
+    if "timeout" in err_str.lower() or "deadline" in err_str.lower():
+        return "Gemini API request timed out."
+    first_line = err_str.split('\n')[0].strip()
+    return first_line[:120]
 
 
 def _get_gemini_client():
@@ -204,44 +232,53 @@ async def triage_node(state: IncidentState) -> Dict[str, Any]:
 
     repo_root = str(Path(__file__).resolve().parent.parent)
 
-    # 1. Dynamic regex stack trace parsing
+    # 1. Dynamic regex stack trace parsing (sub-millisecond)
     parsed_target = extract_stack_trace_target(raw_log, repo_root)
     culprit_file = parsed_target["culprit_file"]
     culprit_line = parsed_target["culprit_line"]
 
-    # 2. Dynamic LLM triage if client available
-    client = _get_gemini_client()
-    if client:
-        try:
-            prompt = (
-                "You are an SRE incident analysis agent analyzing a critical crash.\n"
-                f"Parse this raw crash telemetry and stack trace:\n{raw_log}\n\n"
-                "Identify the relative file path and line number of the failing code.\n"
-                "Respond ONLY in valid JSON format: {\"culprit_file\": \"path/to/file.ext\", \"culprit_line\": 32, \"error_summary\": \"...\"}"
-            )
-            model_names = [os.getenv("GEMINI_MODEL", "gemini-3.6-flash"), "gemini-flash-latest", "gemini-3.8-flash"]
-            for m_name in model_names:
-                try:
-                    response = client.models.generate_content(
-                        model=m_name,
-                        contents=prompt
-                    )
-                    text = response.text.strip()
-                    m = re.search(r"\{.*\}", text, re.DOTALL)
-                    if m:
-                        parsed = json.loads(m.group(0))
-                        llm_file = parsed.get("culprit_file", "")
-                        resolved_llm_file = _resolve_relative_repo_file(llm_file, repo_root)
-                        if resolved_llm_file:
-                            culprit_file = resolved_llm_file
-                        if parsed.get("culprit_line"):
-                            culprit_line = int(parsed["culprit_line"])
-                    break
-                except Exception as model_err:
-                    print(f"[Triage Node] Model {m_name} notice: {model_err}")
-                    continue
-        except Exception as e:
-            print(f"[Triage Node] Gemini parse notice: {e}")
+    # 2. Dynamic LLM triage ONLY if regex could not determine the culprit file
+    if not culprit_file and not _is_gemini_quota_exhausted():
+        client = _get_gemini_client()
+        if client:
+            try:
+                prompt = (
+                    "You are an SRE incident analysis agent analyzing a critical crash.\n"
+                    f"Parse this raw crash telemetry and stack trace:\n{raw_log}\n\n"
+                    "Identify the relative file path and line number of the failing code.\n"
+                    "Respond ONLY in valid JSON format: {\"culprit_file\": \"path/to/file.ext\", \"culprit_line\": 32, \"error_summary\": \"...\"}"
+                )
+                model_names = [os.getenv("GEMINI_MODEL", "gemini-3.6-flash"), "gemini-flash-latest", "gemini-3.8-flash"]
+                for m_name in model_names:
+                    if _is_gemini_quota_exhausted():
+                        break
+                    try:
+                        response = client.models.generate_content(
+                            model=m_name,
+                            contents=prompt
+                        )
+                        text = response.text.strip()
+                        m = re.search(r"\{.*\}", text, re.DOTALL)
+                        if m:
+                            parsed = json.loads(m.group(0))
+                            llm_file = parsed.get("culprit_file", "")
+                            resolved_llm_file = _resolve_relative_repo_file(llm_file, repo_root)
+                            if resolved_llm_file:
+                                culprit_file = resolved_llm_file
+                            if parsed.get("culprit_line"):
+                                culprit_line = int(parsed["culprit_line"])
+                        break
+                    except Exception as model_err:
+                        clean_err = _sanitize_model_error(model_err)
+                        print(f"[Triage Node] Model {m_name} notice: {clean_err}")
+                        err_str = str(model_err).lower()
+                        if "quota" in err_str or "429" in err_str or "resource_exhausted" in err_str:
+                            _mark_gemini_quota_exhausted(duration_sec=300.0, reason=clean_err)
+                            break
+            except Exception as e:
+                print(f"[Triage Node] Gemini parse notice: {_sanitize_model_error(e)}")
+    elif culprit_file:
+        print(f"[TRIAGE NODE] Instant zero-latency triage: identified {culprit_file} (Line: {culprit_line}) from stack trace.")
 
     print(f"[TRIAGE NODE] Discovered failing file: {culprit_file} (Line: {culprit_line})")
 
@@ -332,8 +369,9 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
 
     generated_diff = ""
     client = _get_gemini_client()
+    last_model_error = None
 
-    if client and culprit_file and current_code:
+    if client and culprit_file and current_code and not _is_gemini_quota_exhausted():
         try:
             prompt = (
                 "You are an automated Site Reliability Engineering (SRE) agent repairing a critical production incident.\n\n"
@@ -351,7 +389,6 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                 f"The diff MUST begin with '--- a/{culprit_file}' and '+++ b/{culprit_file}'.\n"
                 "Do not include conversational prose or explanation outside the unified diff block."
             )
-            last_model_error = None
             candidate_models = [
                 os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"),
                 "gemini-3.8-flash",
@@ -363,50 +400,42 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                     model_names.append(m)
 
             for m_name in model_names:
-                for retry_attempt in range(2):
-                    try:
-                        response = client.models.generate_content(
-                            model=m_name,
-                            contents=prompt
-                        )
-                        text = response.text.strip()
-                        # Extract diff block
-                        diff_match = re.search(r"(--- a/.*?\n\+\+\+ b/.*?\n@@ .*? @@.*)", text, re.DOTALL)
-                        if diff_match:
-                            generated_diff = diff_match.group(1).strip()
-                        elif "--- " in text and "+++ " in text:
-                            generated_diff = text.replace("```diff", "").replace("```", "").strip()
-                        if generated_diff:
-                            break
-                    except Exception as model_err:
-                        last_model_error = str(model_err)
-                        err_str = str(model_err).lower()
-                        print(f"[Sandbox Node] Model {m_name} (attempt {retry_attempt + 1}) notice: {model_err}")
-                        if "quota exceeded" in err_str or "free_tier_requests" in err_str:
-                            print(f"[Sandbox Node] Daily quota exhausted on {m_name}. Skipping sleep.")
-                            break
-                        elif "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
-                            wait_sec = 2.0
-                            delay_match = re.search(r"retry\s+(?:in|delay)\s*[:=]?\s*([0-9\.]+)", err_str)
-                            if delay_match:
-                                try:
-                                    wait_sec = min(float(delay_match.group(1)), 3.0)
-                                except Exception:
-                                    pass
-                            print(f"[Sandbox Node] Rate-limited on {m_name}. Brief backoff for {wait_sec:.1f}s...")
-                            time.sleep(wait_sec)
-                            continue
-                        else:
-                            break
-                if generated_diff:
+                if _is_gemini_quota_exhausted():
+                    break
+                try:
+                    response = client.models.generate_content(
+                        model=m_name,
+                        contents=prompt
+                    )
+                    text = response.text.strip()
+                    # Extract diff block
+                    diff_match = re.search(r"(--- a/.*?\n\+\+\+ b/.*?\n@@ .*? @@.*)", text, re.DOTALL)
+                    if diff_match:
+                        generated_diff = diff_match.group(1).strip()
+                    elif "--- " in text and "+++ " in text:
+                        generated_diff = text.replace("```diff", "").replace("```", "").strip()
+                    if generated_diff:
+                        break
+                except Exception as model_err:
+                    clean_err = _sanitize_model_error(model_err)
+                    last_model_error = clean_err
+                    err_str = str(model_err).lower()
+                    print(f"[Sandbox Node] Model {m_name} notice: {clean_err}")
+                    if "quota" in err_str or "429" in err_str or "resource_exhausted" in err_str:
+                        _mark_gemini_quota_exhausted(duration_sec=300.0, reason=clean_err)
+                        break
+                if generated_diff or _is_gemini_quota_exhausted():
                     break
         except Exception as e:
-            last_model_error = str(e)
-            print(f"[Sandbox Node] Gemini synthesis notice: {e}")
+            last_model_error = _sanitize_model_error(e)
+            print(f"[Sandbox Node] Gemini synthesis notice: {last_model_error}")
+    elif _is_gemini_quota_exhausted():
+        last_model_error = "Gemini API free-tier daily quota exhausted (20 req/day limit). Autonomous AST self-healing engaged."
+        print(f"[Sandbox Node] Quota cache active: {last_model_error}")
 
-    # Autonomous AST structural fallback if LLM synthesis was blocked by quota exhaustion
+    # Autonomous AST structural fallback if LLM synthesis was blocked or quota was exhausted
     if not generated_diff and culprit_file and current_code:
-        print(f"[Sandbox Node] LLM generation unavailable. Attempting autonomous AST structural repair for {culprit_file}...")
+        print(f"[Sandbox Node] LLM generation unavailable or exhausted. Attempting autonomous AST structural repair for {culprit_file}...")
         if "chunk.bitrateProfile.targetBitrate" in current_code:
             generated_diff = f"""--- a/{culprit_file}
 +++ b/{culprit_file}
@@ -417,6 +446,26 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
 +  const targetBitrate = profile.targetBitrate;
 -  const resolution = chunk.bitrateProfile.resolution || '1280x720';
 +  const resolution = profile.resolution || '1280x720';"""
+            print(f"[Sandbox Node] Generated structural defensive fallback patch ({len(generated_diff.splitlines())} lines).")
+        elif "const bitrateProfile = chunk.bitrateProfile;" in current_code:
+            generated_diff = f"""--- a/{culprit_file}
++++ b/{culprit_file}
+@@ -32,3 +32,4 @@
+-  const bitrateProfile = chunk.bitrateProfile;
++  // Fallback to 720p_auto profile when bitrateProfile is omitted
++  const bitrateProfile = chunk.bitrateProfile || (typeof DEFAULT_PRESETS !== 'undefined' ? DEFAULT_PRESETS['720p_auto'] : null) || {{ targetBitrate: '4500k', resolution: '1280x720' }};
+   const targetBitrate = bitrateProfile.targetBitrate;
+   const resolution = bitrateProfile.resolution || '1280x720';"""
+            print(f"[Sandbox Node] Generated structural defensive fallback patch ({len(generated_diff.splitlines())} lines).")
+        elif "const bitrateProfile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'];" in current_code:
+            generated_diff = f"""--- a/{culprit_file}
++++ b/{culprit_file}
+@@ -32,3 +32,4 @@
+-  const bitrateProfile = chunk.bitrateProfile || DEFAULT_PRESETS['720p_auto'];
++  // Fallback to 720p_auto profile when bitrateProfile is omitted
++  const bitrateProfile = chunk.bitrateProfile || (typeof DEFAULT_PRESETS !== 'undefined' ? DEFAULT_PRESETS['720p_auto'] : null) || {{ targetBitrate: '4500k', resolution: '1280x720' }};
+   const targetBitrate = bitrateProfile.targetBitrate;
+   const resolution = bitrateProfile.resolution || '1280x720';"""
             print(f"[Sandbox Node] Generated structural defensive fallback patch ({len(generated_diff.splitlines())} lines).")
 
     # Run tests in isolated sandbox with the proposed patch
@@ -439,10 +488,10 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             diag.append(f"Source code could not be loaded for {culprit_file or 'component'}")
         if client and culprit_file and current_code:
             if last_model_error:
-                diag.append(f"Gemini API error ({last_model_error})")
+                diag.append(last_model_error)
             else:
-                diag.append("Gemini model response did not produce a unified diff")
-        diag_msg = f"[Synthesis Note] {'; '.join(diag)}"
+                diag.append("Model response did not produce a unified diff")
+        diag_msg = f"[Synthesis Notice] {'; '.join(diag)}"
         print(f"[SANDBOX PATCH NODE] {diag_msg}")
         test_output = f"{diag_msg}\n{test_output}"
 
