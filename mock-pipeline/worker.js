@@ -33,6 +33,13 @@ function processVideoChunk(chunk) {
   const targetBitrate = bitrateProfile.targetBitrate;
   const resolution = bitrateProfile.resolution || '1280x720';
 
+  let pixelFormat = chunk.pixelFormat || chunk.pixFmt || chunk.pixel_format || bitrateProfile.pixelFormat || bitrateProfile.pixFmt || 'yuv420p';
+  const profile = chunk.profile || bitrateProfile.profile || 'baseline';
+
+  if ((codec === 'h264' || codec === 'libx264') && profile === 'baseline' && pixelFormat !== 'yuv420p') {
+    pixelFormat = 'yuv420p';
+  }
+
   return {
     status: 'completed',
     chunkId: chunk.chunkId,
@@ -42,6 +49,8 @@ function processVideoChunk(chunk) {
     duration,
     fps: 60,
     framesRendered: duration * 60,
+    pixelFormat,
+    profile,
     timestamp: new Date().toISOString()
   };
 }
