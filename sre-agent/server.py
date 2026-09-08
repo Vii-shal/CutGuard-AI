@@ -110,6 +110,13 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
                     INCIDENTS_DB[incident_id]["status"] = "BLAST_ASSESSED"
                     INCIDENTS_DB[incident_id]["lifecycle_state"] = "BLAST_ASSESSED"
                     INCIDENTS_DB[incident_id]["active_node"] = "blast_radius_ast"
+                    await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
+                    # Eagerly signal that Step 4 (sandbox_patch) is now actively executing
+                    INCIDENTS_DB[incident_id]["status"] = "SANDBOXED"
+                    INCIDENTS_DB[incident_id]["lifecycle_state"] = "SANDBOXED"
+                    INCIDENTS_DB[incident_id]["active_node"] = "sandbox_patch"
+                    await broadcast_incident_update(incident_id, INCIDENTS_DB[incident_id])
+                    continue
                 elif node_name == "sandbox_patch":
                     INCIDENTS_DB[incident_id]["status"] = "SANDBOXED"
                     INCIDENTS_DB[incident_id]["lifecycle_state"] = "SANDBOXED"
