@@ -23,6 +23,7 @@ load_dotenv()
 # Import LangGraph agent and types
 from langgraph.types import Command
 from agent import cutguard_agent, IncidentState, _get_gemini_client, GENAI_AVAILABLE, LAST_GEMINI_ERROR
+from gemini_keys import gemini_key_manager
 from gitops import close_github_hotfix_pr
 
 app = FastAPI(
@@ -163,20 +164,13 @@ async def execute_agent_workflow(incident_id: str, initial_state: Dict[str, Any]
 
 @app.get("/api/health")
 async def health_check():
-    client = _get_gemini_client()
-    raw_key = os.getenv("GEMINI_API_KEY", "")
-    clean_key = raw_key.strip().strip("'\"")
+    key_health = gemini_key_manager.get_health_status()
     return {
         "status": "online",
         "agent": "CutGuard AI",
         "version": "1.0.0",
         "grafana_mcp": "configured" if os.getenv("GRAFANA_URL") else "simulation_mode",
-        "gemini_api": "active" if clean_key else "missing_key",
-        "genai_sdk_installed": GENAI_AVAILABLE,
-        "client_initialized": bool(client),
-        "last_gemini_error": LAST_GEMINI_ERROR,
-        "key_length": len(clean_key),
-        "key_preview": f"{clean_key[:6]}...{clean_key[-4:]}" if len(clean_key) >= 10 else "too_short"
+        **key_health
     }
 
 
