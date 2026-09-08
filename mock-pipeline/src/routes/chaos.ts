@@ -316,7 +316,7 @@ async function handleChaosInject(req: Request, res: Response) {
         if (content.includes("DEFAULT_PRESETS['720p_auto']") || content.includes("bitrateProfile")) {
           const bugLines = "  // BUG: Direct property access on undefined chunk.bitrateProfile causes TypeError / SIGABRT 137\n  const targetBitrate = chunk.bitrateProfile.targetBitrate;\n  const resolution = chunk.bitrateProfile.resolution || '1280x720';";
           const replaced = content.replace(
-            /\s*(?:\/\/\s*Fallback to 720p_auto profile[^\n]*|const\s+(?:bitrateProfile|profile)\s*=)[\s\S]*?const resolution = [^\n]+;/,
+            /\s*(?:\/\/\s*(?:BUG:[^\n]*\n\s*)?Fallback to 720p_auto profile[^\n]*|\/\/\s*BUG:[^\n]*\s*|const\s+(?:bitrateProfile|profile)\s*=)[\s\S]*?const resolution = [^\n]+;/,
             "\n" + bugLines
           );
           if (replaced !== content) {
