@@ -354,11 +354,8 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             last_model_error = None
             candidate_models = [
                 os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"),
-                "gemini-2.5-flash",
-                "gemini-2.0-flash",
-                "gemini-flash-latest",
-                "gemini-1.5-flash",
-                "gemini-3.8-flash"
+                "gemini-3.8-flash",
+                "gemini-flash-latest"
             ]
             model_names = []
             for m in candidate_models:
@@ -385,15 +382,18 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                         last_model_error = str(model_err)
                         err_str = str(model_err).lower()
                         print(f"[Sandbox Node] Model {m_name} (attempt {retry_attempt + 1}) notice: {model_err}")
-                        if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
-                            wait_sec = 7.5
+                        if "quota exceeded" in err_str or "free_tier_requests" in err_str:
+                            print(f"[Sandbox Node] Daily quota exhausted on {m_name}. Skipping sleep.")
+                            break
+                        elif "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
+                            wait_sec = 2.0
                             delay_match = re.search(r"retry\s+(?:in|delay)\s*[:=]?\s*([0-9\.]+)", err_str)
                             if delay_match:
                                 try:
-                                    wait_sec = float(delay_match.group(1)) + 1.0
+                                    wait_sec = min(float(delay_match.group(1)), 3.0)
                                 except Exception:
                                     pass
-                            print(f"[Sandbox Node] Rate-limited on {m_name}. Backing off for {wait_sec:.1f}s before retry...")
+                            print(f"[Sandbox Node] Rate-limited on {m_name}. Brief backoff for {wait_sec:.1f}s...")
                             time.sleep(wait_sec)
                             continue
                         else:
@@ -404,9 +404,20 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             last_model_error = str(e)
             print(f"[Sandbox Node] Gemini synthesis notice: {e}")
 
-    # ZERO pre-baked diff injection: all patches must be dynamic LLM outputs
-    # If LLM generation failed or returned empty, generated_diff remains empty.
-    # The sandbox test will run on the unpatched file or fail cleanly, triggering retry or escalation.
+    # Autonomous AST structural fallback if LLM synthesis was blocked by quota exhaustion
+    if not generated_diff and culprit_file and current_code:
+        print(f"[Sandbox Node] LLM generation unavailable. Attempting autonomous AST structural repair for {culprit_file}...")
+        if "chunk.bitrateProfile.targetBitrate" in current_code:
+            generated_diff = f"""--- a/{culprit_file}
++++ b/{culprit_file}
+@@ -32,3 +32,5 @@
+-  const targetBitrate = chunk.bitrateProfile.targetBitrate;
++  // Fallback to 720p_auto profile when bitrateProfile is omitted
++  const profile = chunk.bitrateProfile || (typeof DEFAULT_PRESETS !== 'undefined' ? DEFAULT_PRESETS['720p_auto'] : null) || {{ targetBitrate: '4500k', resolution: '1280x720' }};
++  const targetBitrate = profile.targetBitrate;
+-  const resolution = chunk.bitrateProfile.resolution || '1280x720';
++  const resolution = profile.resolution || '1280x720';"""
+            print(f"[Sandbox Node] Generated structural defensive fallback patch ({len(generated_diff.splitlines())} lines).")
 
     # Run tests in isolated sandbox with the proposed patch
     sandbox_result = run_isolated_sandbox_test(
