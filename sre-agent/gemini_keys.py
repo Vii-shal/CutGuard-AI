@@ -45,6 +45,20 @@ def is_rate_limit_error(err: Any) -> bool:
     ])
 
 
+def is_transient_server_error(err: Any) -> bool:
+    """Detects 503 UNAVAILABLE, high demand spikes, or transient service disruptions."""
+    err_str = str(err).lower()
+    return any(marker in err_str for marker in [
+        "503",
+        "unavailable",
+        "high demand",
+        "overloaded",
+        "service unavailable",
+        "temporarily unavailable",
+        "try again later"
+    ])
+
+
 def is_auth_error(err: Any) -> bool:
     """Detects invalid API key or permission errors."""
     err_str = str(err).lower()
@@ -63,6 +77,8 @@ def sanitize_error(err: Any) -> str:
     err_str = str(err)
     if is_rate_limit_error(err):
         return "Gemini API rate limit / daily quota reached (429 RESOURCE_EXHAUSTED)."
+    if is_transient_server_error(err):
+        return "Gemini API temporarily unavailable due to high demand (503 UNAVAILABLE)."
     if is_auth_error(err):
         return "Gemini API authentication failed (invalid or expired key)."
     first_line = err_str.split("\n")[0].strip()
@@ -279,8 +295,10 @@ class GeminiKeyManager:
 
         if not candidate_models:
             candidate_models = [
-                os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"),
+                os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
                 "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3.7-flash",
                 "gemini-flash-latest"
             ]
 
@@ -339,6 +357,26 @@ class GeminiKeyManager:
                         print(f"[Gemini Key Manager] [Failover] Key #{slot.index + 1} ({slot.masked}) hit 429/RESOURCE_EXHAUSTED. Cooling down for {int(self.cooldown_duration_sec)}s. Instantly failing over to next key...")
                         key_hit_rate_limit = True
                         break  # Break inner model loop to switch key immediately!
+
+                    elif is_transient_server_error(model_err):
+                        # High demand / 503 error on this model! Try immediate backoff retry once, then failover to next model
+                        print(f"[Gemini Key Manager] [Transient 503] Model {model_name} on Key #{slot.index + 1} ({slot.masked}) reported high demand. Retrying after 1.5s backoff...")
+                        time.sleep(1.5)
+                        try:
+                            response = client.models.generate_content(
+                                model=model_name,
+                                contents=contents,
+                                **kwargs
+                            )
+                            slot.mark_success()
+                            self.last_global_error = None
+                            print(f"[Gemini Key Manager] Backoff retry succeeded with Key #{slot.index + 1} ({slot.masked}) using model {model_name}")
+                            return response, None
+                        except Exception as retry_err:
+                            clean_retry_err = sanitize_error(retry_err)
+                            print(f"[Gemini Key Manager] Model {model_name} retry also failed: {clean_retry_err}. Failing over to next candidate model...")
+                            slot.last_error = clean_retry_err
+                            continue
 
                     elif is_auth_error(model_err):
                         slot.mark_auth_error(clean_err)

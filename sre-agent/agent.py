@@ -227,7 +227,13 @@ async def triage_node(state: IncidentState) -> Dict[str, Any]:
             "Identify the relative file path and line number of the failing code.\n"
             "Respond ONLY in valid JSON format: {\"culprit_file\": \"path/to/file.ext\", \"culprit_line\": 32, \"error_summary\": \"...\"}"
         )
-        model_names = [os.getenv("GEMINI_MODEL", "gemini-3.6-flash"), "gemini-flash-latest", "gemini-3.8-flash"]
+        model_names = [
+            os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.7-flash",
+            "gemini-flash-latest"
+        ]
         response, err = gemini_key_manager.generate_content(prompt, candidate_models=model_names)
         if response:
             text = (getattr(response, 'text', '') or '').strip()
@@ -359,6 +365,8 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             candidate_models = [
                 os.getenv("GEMINI_PRO_MODEL", "gemini-3.6-flash"),
                 "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3.7-flash",
                 "gemini-flash-latest"
             ]
             response, last_model_error = gemini_key_manager.generate_content(prompt, candidate_models=candidate_models)
@@ -380,16 +388,7 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             last_model_error = "GEMINI_API_KEY is not configured in environment or .env."
         print(f"[Sandbox Node] Quota notice: {last_model_error}")
 
-    # Run tests in isolated sandbox with the proposed patch
-    sandbox_result = run_isolated_sandbox_test(
-        diff_patch=generated_diff,
-        target_file_rel=culprit_file,
-        repo_root=repo_root
-    )
-
-    test_passed = sandbox_result.get("passed", False)
-    test_output = sandbox_result.get("summary", "") + "\n" + sandbox_result.get("stdout", "") + sandbox_result.get("stderr", "")
-
+    # Guard against empty diff: if no diff was produced, do not execute sandbox with empty payload
     if not generated_diff:
         diag = []
         if not gemini_key_manager.has_keys():
@@ -404,7 +403,27 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
             diag.append(last_model_error or "Model response did not produce a unified diff")
         diag_msg = f"[Synthesis Notice] {'; '.join(diag)}"
         print(f"[SANDBOX PATCH NODE] {diag_msg}")
-        test_output = f"{diag_msg}\n{test_output}"
+
+        return {
+            "generated_diff": "",
+            "test_passed": False,
+            "test_output": f"{diag_msg}\nPatch synthesis was not completed; skipping sandbox execution.",
+            "retry_count": retry_count + 1,
+            "status": "SANDBOX_TESTED",
+            "lifecycle_state": "SANDBOXED",
+            "active_node": "sandbox_patch",
+            "error_message": diag_msg
+        }
+
+    # Run tests in isolated sandbox with the proposed patch
+    sandbox_result = run_isolated_sandbox_test(
+        diff_patch=generated_diff,
+        target_file_rel=culprit_file,
+        repo_root=repo_root
+    )
+
+    test_passed = sandbox_result.get("passed", False)
+    test_output = sandbox_result.get("summary", "") + "\n" + sandbox_result.get("stdout", "") + sandbox_result.get("stderr", "")
 
     print(f"[SANDBOX PATCH NODE] Test result: {'PASSED' if test_passed else 'FAILED'}")
 

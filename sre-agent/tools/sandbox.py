@@ -252,8 +252,8 @@ def run_isolated_sandbox_test(
             "passed": is_valid_patch,
             "exit_code": 0 if is_valid_patch else 1,
             "stdout": "Structural AST unified diff validation passed." if is_valid_patch else "",
-            "stderr": "" if is_valid_patch else "Patch is missing unified diff markers.",
-            "summary": "Sandbox validated unified diff syntax (remote test offline)." if is_valid_patch else "Invalid patch syntax."
+            "stderr": "" if is_valid_patch else ("Patch is missing unified diff markers." if diff_patch else "No patch was provided to the sandbox runner."),
+            "summary": "Sandbox validated unified diff syntax (remote test offline)." if is_valid_patch else ("Invalid patch syntax." if diff_patch else "Empty patch provided.")
         }
 
     temp_dir = tempfile.mkdtemp(prefix="cutguard_sandbox_")
