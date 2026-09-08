@@ -126,11 +126,11 @@ def create_github_hotfix_pr(
             f"- **Blast Radius Impact Score:** `{blast_score}/100`\n"
             f"- **Hot-Patch Status:** 🟢 Hot-patch already active in production video stream (<50ms latency)\n\n"
             f"### Proposed Code Changes\n"
-            f"```diff\n{patch_diff.strip()}\n```\n\n"
+            f"```diff\n{(patch_diff or '').strip()}\n```\n\n"
             f"### Sandbox Test Assertions\n"
-            f"```text\n{test_output.strip() or 'Sandbox unit tests passed cleanly.'}\n```\n\n"
+            f"```text\n{(test_output or '').strip() or 'Sandbox unit tests passed cleanly.'}\n```\n\n"
             f"### Enterprise RCA & Post-Mortem\n"
-            f"{post_mortem.strip()}\n\n"
+            f"{(post_mortem or '').strip()}\n\n"
             f"---\n*Generated autonomously by [CutGuard AI](https://cutguard-dashboard.vercel.app/)*"
         )
 

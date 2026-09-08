@@ -138,6 +138,9 @@ def _resolve_relative_repo_file(file_path: str, repo_root: Optional[str] = None)
     Dynamically verifies and resolves a file path against repo files.
     Searches repo tree recursively if only a basename is given in stack traces.
     """
+    if not file_path or not isinstance(file_path, str):
+        return None
+
     if not repo_root:
         repo_root = str(Path(__file__).resolve().parent.parent)
 
@@ -257,7 +260,7 @@ async def triage_node(state: IncidentState) -> Dict[str, Any]:
                             model=m_name,
                             contents=prompt
                         )
-                        text = response.text.strip()
+                        text = (getattr(response, 'text', '') or '').strip()
                         m = re.search(r"\{.*\}", text, re.DOTALL)
                         if m:
                             parsed = json.loads(m.group(0))
@@ -367,6 +370,7 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                 current_code = f.read()
                 print(f"[SANDBOX PATCH NODE] Read fallback source from {local_candidate}")
 
+    current_code = current_code or ""
     generated_diff = ""
     client = _get_gemini_client()
     last_model_error = None
@@ -407,7 +411,7 @@ def sandbox_patch_node(state: IncidentState) -> Dict[str, Any]:
                         model=m_name,
                         contents=prompt
                     )
-                    text = response.text.strip()
+                    text = (getattr(response, 'text', '') or '').strip()
                     # Extract diff block
                     diff_match = re.search(r"(--- a/.*?\n\+\+\+ b/.*?\n@@ .*? @@.*)", text, re.DOTALL)
                     if diff_match:
@@ -737,8 +741,8 @@ def escalate_node(state: IncidentState) -> Dict[str, Any]:
     if is_rejected:
         err_context = "Manual SRE Rejection: Operator rejected candidate patch during human gate sign-off."
     else:
-        test_out = state.get("test_output", "").strip()
-        state_err = state.get("error_message", "").strip()
+        test_out = (state.get("test_output") or "").strip()
+        state_err = (state.get("error_message") or "").strip()
         if state_err:
             err_context = state_err
         elif test_out:
